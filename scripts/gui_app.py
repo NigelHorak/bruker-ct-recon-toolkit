@@ -153,7 +153,8 @@ def _slider_for(n: int, idx: int = 0):
 
     n = max(1, int(n or 1))
     i = max(0, min(int(idx or 0), n - 1))
-    return gr.update(maximum=n - 1, value=i, interactive=n > 1)
+    # Gradio requires minimum < maximum (so max at least 1 even for a single image)
+    return gr.update(maximum=max(1, n - 1), value=i, interactive=n > 1)
 
 
 def _view(img, pix_um: float) -> str:
@@ -892,7 +893,7 @@ def build_app():
                     btn_recon_prev = gr.Button("< Previous", scale=1)
                     recon_slider = gr.Slider(
                         minimum=0,
-                        maximum=0,
+                        maximum=1,
                         value=0,
                         step=1,
                         label="Browse results",
