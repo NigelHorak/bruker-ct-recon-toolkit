@@ -24,6 +24,8 @@ class BrukerLogMeta:
     source_voltage_kv: float = 0.0
     source_current_ua: float = 0.0
     flat_field_correction: bool = False
+    postalignment: float = 0.0
+    postalignment_applied: bool = False
     raw: Dict[str, str] = None  # type: ignore
 
     def __post_init__(self) -> None:
@@ -102,6 +104,8 @@ def parse_bruker_log(log_path: str | Path) -> BrukerLogMeta:
         source_voltage_kv=_as_float(_find_key(raw, "Source Voltage (kV)")),
         source_current_ua=_as_float(_find_key(raw, "Source Current (uA)")),
         flat_field_correction=_truthy(_find_key(raw, "Flat Field Correction") or "OFF"),
+        postalignment=_as_float(_find_key(raw, "Postalignment"), 0.0),
+        postalignment_applied=_truthy(_find_key(raw, "Postalignment Applied") or "0"),
         raw=raw,
     )
     return meta

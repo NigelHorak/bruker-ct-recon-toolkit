@@ -732,10 +732,185 @@ def run_full(
     )
 
 
-def probe_scan_info(scan_dir: str) -> Tuple[str, int, int, int]:
-    """Return (status_text, height, width, mid_row) for GUI folder load."""
+@dataclass
+class AlignCache:
+    """Cached mid-row sinogram for sub-second alignment nudges."""
+
+    scan_dir: str
+    row: int
+    sino: Any  # np.ndarray
+    thetas: Any  # np.ndarray
+    width: int
+    height: int
+    base_center: float
+    log_postalignment: float
+    n_projections: int
+
+
+def _sharpness_score(img: np.ndarray) -> float:
+    """Higher = sharper. Used to auto-pick pixel shift."""
+    x = np.asarray(img, dtype=np.float64)
+    # robust normalize
+    lo, hi = np.percentile(x, (1, 99))
+    if hi <= lo:
+        return 0.0
+    x = (x - lo) / (hi - lo)
+    # Laplacian variance
+    lap = (
+        -4.0 * x
+        + np.roll(x, 1, 0)
+        + np.roll(x, -1, 0)
+        + np.roll(x, 1, 1)
+        + np.roll(x, -1, 1)
+    )
+    return float(lap.var())
+
+
+def prepare_align_cache(
+    scan_dir: Path,
+    preview_row: Optional[int] = None,
+    progress: ProgressCb = None,
+) -> AlignCache:
+    """
+    One-time load of a single detector row for fast alignment.
+    After this, quick_align_preview() only re-runs FBP (no disk I/O).
+    """
+    scan_dir, log_path, meta, proj_paths, height, width = _prepare_scan(Path(scan_dir), progress)
+    mid = height // 2
+    row = mid if preview_row is None or preview_row < 0 else int(preview_row)
+    if row < 0 or row >= height:
+        raise ValueError(f"align row {row} out of range 0..{height - 1}")
+
+    _log(f"Caching row {row} for quick alignment (one-time load)...", progress)
+    sino = load_sinogram_row(proj_paths, row, progress)
+    n_angles = sino.shape[0]
+    thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
+
+    # Base COR with zero shift
+    tmp = Settings(center_mode="auto", pixel_shift=0.0)
+    base, _, _ = resolve_center(sino, tmp, width)
+    post = float(meta.postalignment or 0.0)
+    _log(
+        f"Align cache ready: base_COR={base:.3f}  log_Postalignment={post:.3f}  "
+        f"n={n_angles}  row={row}",
+        progress,
+    )
+    return AlignCache(
+        scan_dir=str(Path(scan_dir).resolve()),
+        row=row,
+        sino=sino,
+        thetas=thetas,
+        width=width,
+        height=height,
+        base_center=base,
+        log_postalignment=post,
+        n_projections=n_angles,
+    )
+
+
+def quick_align_preview(
+    cache: AlignCache,
+    pixel_shift: float,
+    apply_log: bool = True,
+) -> Tuple[np.ndarray, str, float, float]:
+    """Fast FBP preview from cached sinogram (no rings, no disk)."""
+    shift = float(pixel_shift or 0.0)
+    center = float(cache.base_center) + shift
+    settings = Settings(
+        recon_type="FBP",
+        method="FBP_CUDA",
+        filter_name="hann",
+        apply_log=bool(apply_log),
+        ring_enable=False,
+        ring_method="none",
+        center_mode="manual",
+        center=center,
+        pixel_shift=0.0,
+    )
+    try:
+        img = reconstruct_sinogram(np.asarray(cache.sino, dtype=np.float32).copy(), center, cache.thetas, settings)
+    except Exception:
+        settings.method = "FBP"
+        img = reconstruct_sinogram(np.asarray(cache.sino, dtype=np.float32).copy(), center, cache.thetas, settings)
+
+    msg = (
+        f"QUICK ALIGN | base={cache.base_center:.3f}  shift={shift:+.3f}  "
+        f"effective={center:.3f}  row={cache.row}  (cached, FBP, no rings)"
+    )
+    return _norm_display(img), msg, float(cache.base_center), float(center)
+
+
+def auto_tune_pixel_shift(
+    cache: AlignCache,
+    search: float = 2.0,
+    step: float = 0.25,
+    apply_log: bool = True,
+    progress: ProgressCb = None,
+) -> Tuple[float, np.ndarray, str, float, float]:
+    """
+    Try shifts around 0 (and favor log postalignment) — pick sharpest slice.
+    Typically a few seconds on GPU.
+    """
+    candidates = list(np.arange(-search, search + 1e-9, step))
+    # Always include log postalignment and 0
+    for extra in (0.0, float(cache.log_postalignment), -float(cache.log_postalignment)):
+        if all(abs(extra - c) > 1e-9 for c in candidates):
+            candidates.append(extra)
+    candidates = sorted(set(round(float(c), 3) for c in candidates))
+
+    best_shift = float(cache.log_postalignment or 0.0)
+    best_score = -1.0
+    best_img = None
+    _log(f"Auto-tuning pixel shift over {len(candidates)} trials...", progress)
+    for i, shift in enumerate(candidates):
+        center = cache.base_center + float(shift)
+        settings = Settings(
+            method="FBP_CUDA",
+            apply_log=apply_log,
+            ring_enable=False,
+            center_mode="manual",
+            center=center,
+            pixel_shift=0.0,
+        )
+        try:
+            img = reconstruct_sinogram(
+                np.asarray(cache.sino, dtype=np.float32).copy(), center, cache.thetas, settings
+            )
+        except Exception:
+            settings.method = "FBP"
+            img = reconstruct_sinogram(
+                np.asarray(cache.sino, dtype=np.float32).copy(), center, cache.thetas, settings
+            )
+        score = _sharpness_score(img)
+        if score > best_score:
+            best_score = score
+            best_shift = float(shift)
+            best_img = _norm_display(img)
+        if i % 4 == 0:
+            _log(f"  trial {i + 1}/{len(candidates)} shift={shift:+.2f} score={score:.4g}", progress)
+
+    if best_img is None:
+        best_img, msg, base, eff = quick_align_preview(cache, best_shift, apply_log=apply_log)
+    else:
+        msg = (
+            f"QUICK ALIGN | base={cache.base_center:.3f}  shift={best_shift:+.3f}  "
+            f"effective={cache.base_center + best_shift:.3f}  row={cache.row}"
+        )
+        base = float(cache.base_center)
+        eff = float(cache.base_center + best_shift)
+    out = (
+        f"AUTO-TUNE done | best_shift={best_shift:+.3f}  score={best_score:.4g}  "
+        f"(log suggested {cache.log_postalignment:+.3f})\n{msg}"
+    )
+    _log(out, progress)
+    return best_shift, best_img, out, base, eff
+
+
+def probe_scan_info(scan_dir: str) -> Tuple[str, int, int, int, float]:
+    """Return (status_text, height, width, mid_row, log_postalignment)."""
     scan_dir_p, log_path, meta, proj_paths, height, width = _prepare_scan(Path(scan_dir))
     mid = height // 2
+    post = float(meta.postalignment or 0.0)
     geom_txt = ""
     try:
         g = cone_geometry_from_log(meta)
@@ -745,9 +920,10 @@ def probe_scan_info(scan_dir: str) -> Tuple[str, int, int, int]:
         )
     except Exception as exc:
         geom_txt = f" | FDK geometry incomplete: {exc}"
+    post_txt = f" | NRecon Postalignment={post:+.3f}"
     text = (
         f"OK — {len(proj_paths)} projections | detector {height}×{width} | "
         f"log={log_path.name} | prefix={meta.filename_prefix!r} | "
-        f"rot_step={meta.rotation_step_deg}° | mid_row={mid}{geom_txt}"
+        f"rot_step={meta.rotation_step_deg}° | mid_row={mid}{post_txt}{geom_txt}"
     )
-    return text, height, width, mid
+    return text, height, width, mid, post

@@ -1,13 +1,13 @@
 """
 Gradio GUI for Bruker CT Algotom toolkit.
-Partner workflow: double-click Start Toolkit.bat — no CLI needed.
+Designed for fast alignment (~30s): cache mid-row once, then sub-second nudges.
 """
 from __future__ import annotations
 
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
@@ -19,9 +19,13 @@ from recon_core import (  # noqa: E402
     RECON_METHODS,
     RECON_TYPES,
     RING_METHODS,
+    AlignCache,
     Settings,
+    auto_tune_pixel_shift,
     load_settings,
+    prepare_align_cache,
     probe_scan_info,
+    quick_align_preview,
     run_full,
     run_preview,
     save_yaml,
@@ -88,7 +92,7 @@ def _settings_from_ui(
         center_mode=center_mode_l,
         center=float(center_value) if center_mode_l == "manual" else None,
         pixel_shift=float(pixel_shift or 0.0),
-        preview_row=int(preview_row) if preview_row >= 0 else None,
+        preview_row=int(preview_row) if int(preview_row) >= 0 else None,
         output_dir=(output_dir or "").strip(),
         save_preview=True,
     )
@@ -117,15 +121,68 @@ def ui_settings_tuple(s: Settings) -> Tuple[Any, ...]:
     )
 
 
-def on_load_folder(scan_dir: str):
+def _nudge(shift: float, delta: float) -> float:
+    return float(round(float(shift or 0.0) + delta, 3))
+
+
+def on_load_and_cache(scan_dir: str, preview_row: float):
+    """Load folder, pull NRecon postalignment, cache mid-row for fast alignment."""
     scan_dir = (scan_dir or "").strip().strip('"')
     if not scan_dir:
-        return "Enter a scan folder path.", 0, 0, -1
+        return "Enter a scan folder path.", 0, 0, -1, 0.0, None, None, "No folder yet.", 0.0, 0.0
+    logs: List[str] = []
+
+    def progress(msg: str) -> None:
+        logs.append(msg)
+
     try:
-        text, height, width, mid = probe_scan_info(scan_dir)
-        return text, height, width, mid
+        text, height, width, mid, post = probe_scan_info(scan_dir)
+        row = mid if int(preview_row) < 0 else int(preview_row)
+        cache = prepare_align_cache(Path(scan_dir), preview_row=row, progress=progress)
+        # Prefer log postalignment as starting shift (your Poseidon logs use this)
+        start_shift = float(cache.log_postalignment or post or 0.0)
+        img, msg, base, eff = quick_align_preview(cache, start_shift, apply_log=True)
+        status = (
+            f"{text}\n"
+            f"Align cache ready (one-time load). Starting shift={start_shift:+.3f} from log.\n"
+            f"{msg}\n" + "\n".join(logs[-6:])
+        )
+        return text, height, width, row, start_shift, cache, img, status, base, eff
     except Exception as exc:
-        return f"ERROR: {exc}", 0, 0, -1
+        return f"ERROR: {exc}", 0, 0, -1, 0.0, None, None, f"LOAD FAILED: {exc}", 0.0, 0.0
+
+
+def on_quick_align(cache: Optional[AlignCache], pixel_shift: float, apply_log: bool):
+    if cache is None:
+        return None, "Click Load folder first (builds align cache).", 0.0, 0.0, float(pixel_shift or 0.0)
+    try:
+        img, msg, base, eff = quick_align_preview(cache, float(pixel_shift or 0.0), apply_log=bool(apply_log))
+        return img, msg, base, eff, float(pixel_shift or 0.0)
+    except Exception as exc:
+        return None, f"QUICK ALIGN FAILED: {exc}", 0.0, 0.0, float(pixel_shift or 0.0)
+
+
+def on_nudge(cache, pixel_shift, apply_log, delta):
+    new_shift = _nudge(pixel_shift, delta)
+    img, msg, base, eff, _ = on_quick_align(cache, new_shift, apply_log)
+    return new_shift, new_shift, img, msg, base, eff
+
+
+def on_auto_tune(cache: Optional[AlignCache], apply_log: bool):
+    if cache is None:
+        return 0.0, 0.0, None, "Click Load folder first."
+    logs: List[str] = []
+
+    def progress(msg: str) -> None:
+        logs.append(msg)
+
+    try:
+        best, img, msg, base, eff = auto_tune_pixel_shift(
+            cache, search=2.0, step=0.25, apply_log=bool(apply_log), progress=progress
+        )
+        return best, best, img, msg + "\n" + "\n".join(logs[-8:]), base, eff
+    except Exception as exc:
+        return 0.0, 0.0, None, f"AUTO-TUNE FAILED: {exc}", 0.0, 0.0
 
 
 def on_apply_preset(name: str):
@@ -133,11 +190,7 @@ def on_apply_preset(name: str):
     return (*ui_settings_tuple(s), f"Loaded preset: {name}")
 
 
-def _ui_args_to_settings(args) -> Settings:
-    return _settings_from_ui(*args)
-
-
-def on_preview(scan_dir: str, *ctrl):
+def on_full_preview(scan_dir: str, *ctrl):
     scan_dir = (scan_dir or "").strip().strip('"')
     logs: List[str] = []
 
@@ -145,23 +198,17 @@ def on_preview(scan_dir: str, *ctrl):
         logs.append(msg)
 
     try:
-        settings = _ui_args_to_settings(ctrl)
+        settings = _settings_from_ui(*ctrl)
         result = run_preview(Path(scan_dir), settings, progress=progress)
         status = (
             f"{result.message}\n"
-            f"base COR={result.base_center:.3f} | pixel_shift={result.pixel_shift:+.3f} | "
-            f"effective={result.center:.3f} | row={result.row} | {settings.recon_type}\n"
+            f"base={result.base_center:.3f} shift={result.pixel_shift:+.3f} "
+            f"eff={result.center:.3f} | {settings.recon_type}\n"
             + "\n".join(logs[-8:])
         )
-        return (
-            result.display_raw,
-            result.display_corr,
-            status,
-            float(result.base_center),
-            float(result.center),
-        )
+        return result.display_raw, result.display_corr, status
     except Exception as exc:
-        return None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:]), 0.0, 0.0
+        return None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:])
 
 
 def on_full(scan_dir: str, *ctrl):
@@ -172,7 +219,7 @@ def on_full(scan_dir: str, *ctrl):
         logs.append(msg)
 
     try:
-        settings = _ui_args_to_settings(ctrl)
+        settings = _settings_from_ui(*ctrl)
         result = run_full(Path(scan_dir), settings, progress=progress)
         return f"{result.message}\n" + "\n".join(logs[-20:])
     except Exception as exc:
@@ -184,159 +231,161 @@ def on_save_recipe(recipe_name: str, *ctrl):
     if not name:
         name = f"recipe_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-    settings = _ui_args_to_settings(ctrl)
+    settings = _settings_from_ui(*ctrl)
     out = PRESET_DIR / f"{safe}.yaml"
     save_yaml(out, settings.to_config_dict())
-    return f"Saved recipe: {out}", gr_preset_update()
-
-
-def gr_preset_update():
     import gradio as gr
 
-    return gr.update(choices=_preset_choices())
-
-
-def _nudge(shift: float, delta: float) -> float:
-    return float(round(float(shift or 0.0) + delta, 3))
+    return f"Saved recipe: {out}", gr.update(choices=_preset_choices())
 
 
 def build_app():
     import gradio as gr
 
     defaults = load_settings(DEFAULT_CFG)
-    default_shift = float(getattr(defaults, "pixel_shift", 0.0) or 0.0)
 
     with gr.Blocks(title="Bruker CT Algotom Toolkit") as demo:
         gr.Markdown(
             "# Bruker CT Algotom Toolkit\n"
-            "1) Paste scan folder  2) Tune rings + **pixel shift**  3) **Preview**  "
-            "4) **Run full reconstruction**"
+            "**Fast path:** Load folder → (auto-fills NRecon postalignment) → nudge / Auto-tune → done.  \n"
+            "Then tune rings with Full Preview, then Full reconstruction."
         )
+
+        align_cache = gr.State(None)
 
         with gr.Row():
             scan_dir = gr.Textbox(
-                label="Scan folder (contains TIFF projections + .log)",
+                label="Scan folder (TIFF projections + .log)",
                 placeholder=r"D:\Data\MySample_scan",
                 scale=4,
             )
-            btn_load = gr.Button("Load folder info", scale=1)
+            btn_load = gr.Button("1) Load folder + prepare align cache", variant="primary", scale=2)
 
         scan_info = gr.Textbox(label="Scan info", interactive=False)
         height_state = gr.Number(value=0, visible=False)
         width_state = gr.Number(value=0, visible=False)
 
-        with gr.Row():
-            preset = gr.Dropdown(choices=_preset_choices(), value="default", label="Preset / recipe")
-            btn_preset = gr.Button("Apply preset")
-            recipe_name = gr.Textbox(label="Save recipe as", placeholder="my_sample_rings")
-            btn_save = gr.Button("Save recipe")
+        with gr.Accordion("2) Pixel alignment (aim: ~30 seconds)", open=True):
+            gr.Markdown(
+                "Loads the mid-row **once**, then every nudge is a fast FBP (no rings, no full stack).  \n"
+                "Starts from **NRecon Postalignment** in the `.log` when present."
+            )
+            apply_log_align = gr.Checkbox(value=True, label="Apply log for align preview")
+            pixel_shift = gr.Slider(-5.0, 5.0, value=0.0, step=0.05, label="Pixel shift / postalignment (px)")
+            pixel_shift_num = gr.Number(value=0.0, label="Exact shift", precision=3)
+            with gr.Row():
+                btn_m05 = gr.Button("-0.5")
+                btn_m01 = gr.Button("-0.1")
+                btn_quick = gr.Button("Quick Align refresh", variant="secondary")
+                btn_p01 = gr.Button("+0.1")
+                btn_p05 = gr.Button("+0.5")
+            with gr.Row():
+                btn_auto = gr.Button("Auto-tune shift (±2 px)", variant="primary")
+                btn_reset = gr.Button("Reset to log / 0")
+            with gr.Row():
+                base_center_out = gr.Number(0, label="Base COR", interactive=False)
+                effective_center_out = gr.Number(0, label="Effective COR", interactive=False)
+            align_img = gr.Image(label="Quick align preview (FBP, no rings)", type="numpy")
+            align_status = gr.Textbox(label="Align status", lines=6)
 
-        with gr.Accordion("Ring removal", open=True):
-            ring_enable = gr.Checkbox(value=defaults.ring_enable, label="Enable ring removal")
-            ring_method = gr.Dropdown(choices=list(RING_METHODS), value=defaults.ring_method, label="Ring method")
-            snr = gr.Slider(1.0, 10.0, value=defaults.snr, step=0.1, label="snr (higher = less sensitive)")
-            la_size = gr.Slider(3, 151, value=defaults.la_size, step=2, label="la_size (large stripes, odd)")
-            sm_size = gr.Slider(3, 101, value=defaults.sm_size, step=2, label="sm_size (small stripes, odd)")
+        with gr.Accordion("3) Rings + full preview / reconstruct", open=False):
+            with gr.Row():
+                preset = gr.Dropdown(choices=_preset_choices(), value="default", label="Preset")
+                btn_preset = gr.Button("Apply preset")
+                recipe_name = gr.Textbox(label="Save recipe as", placeholder="my_sample")
+                btn_save = gr.Button("Save recipe")
+
+            with gr.Row():
+                ring_enable = gr.Checkbox(value=defaults.ring_enable, label="Enable ring removal")
+                ring_method = gr.Dropdown(choices=list(RING_METHODS), value=defaults.ring_method, label="Ring method")
+            snr = gr.Slider(1.0, 10.0, value=defaults.snr, step=0.1, label="snr")
+            la_size = gr.Slider(3, 151, value=defaults.la_size, step=2, label="la_size")
+            sm_size = gr.Slider(3, 101, value=defaults.sm_size, step=2, label="sm_size")
             drop_ratio = gr.Slider(0.0, 0.5, value=defaults.drop_ratio, step=0.01, label="drop_ratio")
             dim = gr.Radio(choices=[1, 2], value=defaults.dim, label="dim")
 
-        with gr.Accordion("Alignment (postalignment / pixel shift)", open=True):
-            gr.Markdown(
-                "Like NRecon **Postalignment**: keep **auto** COR, then nudge **pixel shift** "
-                "until double edges / misalignment disappear. Your log used Postalignment ≈ 0.50 — "
-                "start near that and Preview."
-            )
-            center_mode = gr.Radio(
-                choices=["auto", "manual"],
-                value=defaults.center_mode,
-                label="Base center of rotation",
-            )
-            center_value = gr.Number(
-                value=0.0,
-                label="Manual base center (only used when mode = manual)",
-                precision=3,
-            )
-            pixel_shift = gr.Slider(
-                minimum=-20.0,
-                maximum=20.0,
-                value=default_shift,
-                step=0.05,
-                label="Pixel shift / postalignment (px)",
-            )
-            pixel_shift_num = gr.Number(
-                value=default_shift,
-                label="Pixel shift exact value",
-                precision=3,
-            )
-            with gr.Row():
-                btn_m1 = gr.Button("-1.0")
-                btn_m05 = gr.Button("-0.5")
-                btn_m01 = gr.Button("-0.1")
-                btn_p01 = gr.Button("+0.1")
-                btn_p05 = gr.Button("+0.5")
-                btn_p1 = gr.Button("+1.0")
-                btn_reset_shift = gr.Button("Reset shift to 0")
-            with gr.Row():
-                base_center_out = gr.Number(value=0.0, label="Base COR (from last Preview)", interactive=False)
-                effective_center_out = gr.Number(
-                    value=0.0,
-                    label="Effective COR = base + shift (from last Preview)",
-                    interactive=False,
-                )
-
-        with gr.Accordion("Reconstruction", open=True):
-            recon_type = gr.Radio(
-                choices=list(RECON_TYPES),
-                value=getattr(defaults, "recon_type", "FBP"),
-                label="Algorithm family — FBP (fast) or FDK (cone-beam)",
-            )
-            method = gr.Dropdown(
-                choices=list(RECON_METHODS),
-                value=defaults.method,
-                label="FBP family method (ignored when FDK is selected)",
-            )
+            recon_type = gr.Radio(choices=list(RECON_TYPES), value=defaults.recon_type, label="FBP or FDK")
+            method = gr.Dropdown(choices=list(RECON_METHODS), value=defaults.method, label="FBP method")
             filter_name = gr.Dropdown(choices=list(FILTER_NAMES), value=defaults.filter_name, label="Filter")
-            apply_log = gr.Checkbox(value=defaults.apply_log, label="Apply log (transmission → absorption)")
-            num_iter = gr.Slider(1, 500, value=defaults.num_iter, step=1, label="Iterations (SIRT/SART/CGLS; FBP only)")
-            chunk_size = gr.Slider(1, 128, value=defaults.chunk_size, step=1, label="Chunk size (FBP full recon)")
-            preview_row = gr.Number(value=-1, label="Preview row (-1 = middle)", precision=0)
-            output_dir = gr.Textbox(value="", label="Output folder override (optional)")
+            apply_log = gr.Checkbox(value=defaults.apply_log, label="Apply log")
+            num_iter = gr.Slider(1, 500, value=defaults.num_iter, step=1, label="Iterations")
+            chunk_size = gr.Slider(1, 128, value=defaults.chunk_size, step=1, label="Chunk size")
+            center_mode = gr.Radio(choices=["auto", "manual"], value="auto", label="Base COR mode")
+            center_value = gr.Number(value=0.0, label="Manual base COR", precision=3)
+            preview_row = gr.Number(value=-1, label="Preview row (-1=mid)", precision=0)
+            output_dir = gr.Textbox(value="", label="Output folder override")
 
-        controls = [
-            ring_enable, ring_method, snr, la_size, sm_size, drop_ratio, dim,
-            recon_type, method, filter_name, apply_log, num_iter, chunk_size,
-            center_mode, center_value, pixel_shift, preview_row, output_dir,
-        ]
+            controls = [
+                ring_enable, ring_method, snr, la_size, sm_size, drop_ratio, dim,
+                recon_type, method, filter_name, apply_log, num_iter, chunk_size,
+                center_mode, center_value, pixel_shift, preview_row, output_dir,
+            ]
 
-        with gr.Row():
-            btn_preview = gr.Button("Preview mid-slice", variant="primary")
-            btn_full = gr.Button("Run full reconstruction", variant="stop")
+            with gr.Row():
+                btn_preview = gr.Button("Full Preview (rings + chosen algorithm)")
+                btn_full = gr.Button("Run full reconstruction", variant="stop")
+            with gr.Row():
+                img_before = gr.Image(label="BEFORE rings", type="numpy")
+                img_after = gr.Image(label="AFTER rings", type="numpy")
+            status = gr.Textbox(label="Full preview / recon log", lines=10)
 
-        with gr.Row():
-            img_before = gr.Image(label="BEFORE ring removal", type="numpy")
-            img_after = gr.Image(label="AFTER ring removal", type="numpy")
-
-        status = gr.Textbox(label="Status / log", lines=12)
-
-        # Keep slider and number field in sync
+        # --- wiring ---
         pixel_shift.release(lambda v: float(v), inputs=pixel_shift, outputs=pixel_shift_num)
         pixel_shift_num.change(lambda v: float(v or 0.0), inputs=pixel_shift_num, outputs=pixel_shift)
 
-        btn_m1.click(lambda s: (_nudge(s, -1.0), _nudge(s, -1.0)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
-        btn_m05.click(lambda s: (_nudge(s, -0.5), _nudge(s, -0.5)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
-        btn_m01.click(lambda s: (_nudge(s, -0.1), _nudge(s, -0.1)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
-        btn_p01.click(lambda s: (_nudge(s, 0.1), _nudge(s, 0.1)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
-        btn_p05.click(lambda s: (_nudge(s, 0.5), _nudge(s, 0.5)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
-        btn_p1.click(lambda s: (_nudge(s, 1.0), _nudge(s, 1.0)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
-        btn_reset_shift.click(lambda: (0.0, 0.0), outputs=[pixel_shift, pixel_shift_num])
+        btn_load.click(
+            on_load_and_cache,
+            inputs=[scan_dir, preview_row],
+            outputs=[
+                scan_info, height_state, width_state, preview_row, pixel_shift,
+                align_cache, align_img, align_status, base_center_out, effective_center_out,
+            ],
+        ).then(lambda v: float(v or 0.0), inputs=pixel_shift, outputs=pixel_shift_num)
 
-        btn_load.click(on_load_folder, inputs=[scan_dir], outputs=[scan_info, height_state, width_state, preview_row])
-        btn_preset.click(on_apply_preset, inputs=[preset], outputs=[*controls, status])
-        btn_preview.click(
-            on_preview,
-            inputs=[scan_dir, *controls],
-            outputs=[img_before, img_after, status, base_center_out, effective_center_out],
+        btn_quick.click(
+            on_quick_align,
+            inputs=[align_cache, pixel_shift, apply_log_align],
+            outputs=[align_img, align_status, base_center_out, effective_center_out, pixel_shift_num],
         )
+        btn_m05.click(
+            lambda c, s, a: on_nudge(c, s, a, -0.5),
+            inputs=[align_cache, pixel_shift, apply_log_align],
+            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
+        )
+        btn_m01.click(
+            lambda c, s, a: on_nudge(c, s, a, -0.1),
+            inputs=[align_cache, pixel_shift, apply_log_align],
+            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
+        )
+        btn_p01.click(
+            lambda c, s, a: on_nudge(c, s, a, 0.1),
+            inputs=[align_cache, pixel_shift, apply_log_align],
+            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
+        )
+        btn_p05.click(
+            lambda c, s, a: on_nudge(c, s, a, 0.5),
+            inputs=[align_cache, pixel_shift, apply_log_align],
+            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
+        )
+        btn_auto.click(
+            on_auto_tune,
+            inputs=[align_cache, apply_log_align],
+            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
+        )
+
+        def _reset_shift(cache: Optional[AlignCache]):
+            val = float(cache.log_postalignment) if cache is not None else 0.0
+            img, msg, base, eff, _ = on_quick_align(cache, val, True)
+            return val, val, img, msg, base, eff
+
+        btn_reset.click(
+            _reset_shift,
+            inputs=[align_cache],
+            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
+        )
+
+        btn_preset.click(on_apply_preset, inputs=[preset], outputs=[*controls, status])
+        btn_preview.click(on_full_preview, inputs=[scan_dir, *controls], outputs=[img_before, img_after, status])
         btn_full.click(on_full, inputs=[scan_dir, *controls], outputs=[status])
         btn_save.click(on_save_recipe, inputs=[recipe_name, *controls], outputs=[status, preset])
 
