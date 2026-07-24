@@ -61,13 +61,44 @@ def sweep_alignment(
     apply_log: bool = True,
     progress: ProgressCb = None,
 ) -> List[Candidate]:
+    from preview_cache import (
+        format_params_log,
+        load_cached_preview,
+        preview_params_key,
+        save_cached_preview,
+    )
+
     values = _arange_inclusive(float(start), float(stop), float(step))
     _log(f"Alignment sweep: {len(values)} trials from {values[0]} to {values[-1]}", progress)
     out: List[Candidate] = []
+    scan = Path(cache.scan_dir)
     for i, shift in enumerate(values):
-        img, _msg, base, eff = quick_align_preview(
-            cache, float(shift), apply_log=bool(apply_log), save_history=False
+        params = preview_params_key(
+            scan,
+            kind="align",
+            row=int(cache.row),
+            pixel_shift=float(shift),
+            ring_enable=False,
+            ring_method="none",
+            snr=0.0,
+            la_size=0,
+            sm_size=0,
+            drop_ratio=0.0,
+            dim=1,
+            apply_log=bool(apply_log),
         )
+        hit = load_cached_preview(scan, params)
+        if hit is not None:
+            img, _folder = hit
+            _log(f"recon already exists ({format_params_log(params)})", progress)
+            base = float(cache.base_center)
+            eff = base + float(shift)
+        else:
+            img, _msg, base, eff = quick_align_preview(
+                cache, float(shift), apply_log=bool(apply_log), save_history=False
+            )
+            save_cached_preview(scan, params, img)
+            _log(f"  [{i + 1}/{len(values)}] shift={shift:+.2f} saved", progress)
         score = _sharpness_score(img)
         out.append(
             Candidate(
@@ -76,7 +107,6 @@ def sweep_alignment(
                 payload={"pixel_shift": float(shift), "base": float(base), "effective": float(eff)},
             )
         )
-        _log(f"  [{i + 1}/{len(values)}] shift={shift:+.2f}", progress)
     return out
 
 
@@ -92,8 +122,6 @@ def sweep_ring_recipes(
     progress: ProgressCb = None,
 ) -> List[Candidate]:
     """Fixed set of ring recipes at the current alignment (user picks)."""
-    from copy import deepcopy
-
     methods = [
         ("Off (no cleanup)", "none"),
         ("All rings", "remove_all_stripe"),
@@ -105,39 +133,72 @@ def sweep_ring_recipes(
     thetas = cache.thetas
     sino = np.asarray(cache.sino, dtype=np.float32)
     out: List[Candidate] = []
+    scan = Path(cache.scan_dir)
+    from preview_cache import (
+        format_params_log,
+        load_cached_preview,
+        preview_params_key,
+        save_cached_preview,
+    )
+
     _log(f"Ring recipes at shift={shift:+.3f} ({len(methods)} options)", progress)
     for label, method in methods:
-        s = Settings(
-            recon_type="FBP",
-            method="FBP_CUDA",
-            filter_name="hann",
-            apply_log=bool(apply_log),
+        la = int(la_size) if int(la_size) % 2 == 1 else int(la_size) + 1
+        sm = int(sm_size) if int(sm_size) % 2 == 1 else int(sm_size) + 1
+        params = preview_params_key(
+            scan,
+            kind="ring",
+            row=int(cache.row),
+            pixel_shift=shift,
             ring_enable=method != "none",
             ring_method=method,
             snr=float(snr),
-            la_size=int(la_size) if int(la_size) % 2 == 1 else int(la_size) + 1,
-            sm_size=int(sm_size) if int(sm_size) % 2 == 1 else int(sm_size) + 1,
+            la_size=la,
+            sm_size=sm,
             drop_ratio=float(drop_ratio),
             dim=int(dim),
-            center_mode="manual",
-            center=center,
-            pixel_shift=shift,
+            apply_log=bool(apply_log),
         )
-        work = sino.copy()
-        if method != "none":
+        hit = load_cached_preview(scan, params)
+        if hit is not None:
+            disp, _folder = hit
+            _log(f"recon already exists ({format_params_log(params)})", progress)
+            img_for_score = disp
+        else:
+            s = Settings(
+                recon_type="FBP",
+                method="FBP_CUDA",
+                filter_name="hann",
+                apply_log=bool(apply_log),
+                ring_enable=method != "none",
+                ring_method=method,
+                snr=float(snr),
+                la_size=la,
+                sm_size=sm,
+                drop_ratio=float(drop_ratio),
+                dim=int(dim),
+                center_mode="manual",
+                center=center,
+                pixel_shift=shift,
+            )
+            work = sino.copy()
+            if method != "none":
+                try:
+                    work = apply_ring_removal(work, s)
+                except Exception as exc:
+                    _log(f"  {method} failed: {exc}", progress)
+                    continue
             try:
-                work = apply_ring_removal(work, s)
-            except Exception as exc:
-                _log(f"  {method} failed: {exc}", progress)
-                continue
-        try:
-            img = reconstruct_sinogram(work, center, thetas, s)
-        except Exception:
-            s.method = "FBP"
-            img = reconstruct_sinogram(work, center, thetas, s)
-        disp = _norm_display(img)
-        rs = ring_score(img)
-        sh = sharpness_score(img)
+                img = reconstruct_sinogram(work, center, thetas, s)
+            except Exception:
+                s.method = "FBP"
+                img = reconstruct_sinogram(work, center, thetas, s)
+            disp = _norm_display(img)
+            save_cached_preview(scan, params, disp)
+            img_for_score = img
+            _log(f"  {label}: saved", progress)
+        rs = ring_score(img_for_score)
+        sh = sharpness_score(img_for_score)
         out.append(
             Candidate(
                 label=f"{label}\nring={rs:.3g} sharp={sh:.3g}",
@@ -146,14 +207,13 @@ def sweep_ring_recipes(
                     "ring_method": method,
                     "ring_enable": method != "none",
                     "snr": float(snr),
-                    "la_size": s.la_size,
-                    "sm_size": s.sm_size,
+                    "la_size": la,
+                    "sm_size": sm,
                     "drop_ratio": float(drop_ratio),
                     "dim": int(dim),
                 },
             )
         )
-        _log(f"  {label}: ring={rs:.4g}", progress)
     return out
 
 

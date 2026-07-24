@@ -63,19 +63,20 @@ Exact commit SHAs live in `git log` on `master` (e.g. history cache, port reclai
 ### Outputs (current layout)
 Inside the **scan folder**:
 ```
-<scan>/algotom/history/          # PNG + settings.yaml per action
-<scan>/algotom/preview/          # mid-slice QC
+<scan>/algotom/history/          # PNG + settings.yaml per action (disk archive)
+<scan>/algotom/previews/         # silent param cache — reuse if same settings
+<scan>/algotom/preview/          # mid-slice QC from Preview button
 <scan>/algotom/recon_YYYYMMDD_HHMMSS/   # full volume slices + qc
 ```
 
-### GUI (`scripts/gui_app.py` + `gui_style.py` + `gui_labels.py`)
-- Full-width layout; controls left, large viewer right  
-- Tabs: **Align** | **Rings** | **Run**  
-- Viewer modes: Align check / Before / After / What changed  
-- History filmstrip: click restores settings from that run  
-- Plain-language labels + Gradio `info=` tooltips  
-- Log box at bottom; also `toolkit_gui.log`  
-- Optional email/ntfy alerts via `config/notify.yaml` (from `notify.example.yaml`)  
+### GUI (`scripts/gui_app.py` + `gui_style.py` + `gui_labels.py` + `viewer_html.py`)
+- Full-width layout; controls left (**Align | Rings | Beam hardening | Run**), **Reconstruction** viewer right  
+- Custom zoom/pan viewer (scroll/drag/double-click) with scale bar from Bruker `Image Pixel Size (um)`  
+- Teal **i** hover tips (CSS bubble, not Gradio `info=`)  
+- Align: Single value or Range (default −10…10 step 5); nudges are optional ±0.5/±1 polish  
+- Rings: Try recipes or Strength range (Algotom SNR); fine knobs are Algotom stripe params  
+- Browse… / focus Scan folder opens a **folder** picker (tkinter)  
+- Silent preview cache under `algotom/previews/`  
 
 ### QC / lab helpers
 - `qc_metrics.py` — ring score + sharpness + difference image  
@@ -162,7 +163,7 @@ git pull
 Double-click `Start Toolkit.bat`.
 
 Workflow: Load scan → Align (or Auto-find best) → tweak Rings → Preview → Reconstruct full volume.  
-Click history thumbnails to restore a prior look.
+Browse Reconstruction with arrows/slider, then Use this… to lock settings.
 
 Optional alerts (Nigel’s machine / lab):
 ```powershell

@@ -1,5 +1,5 @@
-"""
-Gradio GUI — NRecon-style: generate options in a range, user picks the best.
+﻿"""
+Gradio GUI - NRecon-style: generate options in a range, user picks the best.
 """
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ from recon_core import (  # noqa: E402
     run_preview,
     save_yaml,
 )
-from history_store import list_history_entries  # noqa: E402
 from gui_style import GUI_CSS, build_theme  # noqa: E402
 from gui_log import ProgressLog, log_exception, log_line, log_path, startup_banner  # noqa: E402
 from gui_labels import (  # noqa: E402
@@ -45,25 +44,26 @@ from gui_labels import (  # noqa: E402
 from sweep_tools import (  # noqa: E402
     Candidate,
     apply_simple_beam_hardening,
-    candidates_to_gallery,
     sweep_alignment,
     sweep_beam_hardening,
     sweep_ring_recipes,
+    sweep_ring_strength,
+)
+from viewer_html import (  # noqa: E402
+    VIEWER_HEAD,
+    centers_html,
+    empty_viewer_html,
+    tip_html,
+    viewer_html,
 )
 
 PRESET_DIR = ROOT / "config" / "presets"
 DEFAULT_CFG = ROOT / "config" / "default.yaml"
 
 
-def _tip(text: str) -> str:
-    safe = (
-        str(text)
-        .replace("&", "&amp;")
-        .replace('"', "&quot;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
-    return f'<span class="ct-i" title="{safe}">i</span>'
+def _help(text: str, tip_key: str = "") -> str:
+    tip = tip_html(INFO[tip_key]) if tip_key and tip_key in INFO else ""
+    return f"<div class='ct-help'>{text}{tip}</div>"
 
 
 def _preset_choices() -> List[str]:
@@ -140,24 +140,74 @@ def ui_tuple(s: Settings, bh: float = 0.0) -> Tuple[Any, ...]:
     )
 
 
-def _gallery_and_entries(scan_dir: str):
-    entries: List[Dict[str, Any]] = []
-    try:
-        if scan_dir:
-            entries = list_history_entries(Path(scan_dir))
-    except Exception as exc:
-        log_exception("history", exc)
-    return [(e["image"], e["caption"]) for e in entries], entries
-
-
 def _cand_list(cands: List[Candidate]) -> List[Dict[str, Any]]:
     return [{"label": c.label, "image": c.image, "payload": c.payload} for c in cands]
 
 
+def _one_stack(label: str, image, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [{"label": label, "image": image, "payload": payload}]
+
+
+def _slider_for(n: int, idx: int = 0):
+    import gradio as gr
+
+    n = max(1, int(n or 1))
+    i = max(0, min(int(idx or 0), n - 1))
+    return gr.update(maximum=n - 1, value=i, interactive=n > 1)
+
+
+def _view(img, pix_um: float) -> str:
+    return viewer_html(img, float(pix_um or 0.0))
+
+
+def _centers(payload: Dict[str, Any], fallback_shift: float = 0.0) -> str:
+    shift = float(payload.get("pixel_shift", fallback_shift) or 0.0)
+    base = float(payload.get("base", 0.0) or 0.0)
+    eff = float(payload.get("effective", base + shift) or (base + shift))
+    return centers_html(base, eff, shift)
+
+
+def on_browse_folder(current: str):
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        path = filedialog.askdirectory(title="Select Bruker scan folder")
+        root.destroy()
+        if path:
+            log_line(f"Browse folder -> {path}")
+            return path
+        return current or ""
+    except Exception as exc:
+        log_exception("Browse folder", exc)
+        return current or ""
+
+
 def on_load(scan_dir: str, preview_row: float):
     scan_dir = (scan_dir or "").strip().strip('"')
+    empty = (
+        "",
+        0,
+        0.0,
+        None,
+        empty_viewer_html(),
+        None,
+        centers_html(0, 0, 0),
+        [],
+        0,
+        {},
+        _slider_for(1, 0),
+        0.0,
+        "Enter a scan folder path.",
+    )
     if not scan_dir:
-        return "", 0, 0.0, None, None, None, 0.0, 0.0, [], [], "Enter a scan folder path."
+        return empty
 
     path = Path(scan_dir)
     if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}:
@@ -165,9 +215,24 @@ def on_load(scan_dir: str, preview_row: float):
             from PIL import Image
 
             arr = np.asarray(Image.open(path).convert("RGB"))
-            return str(path), 0, 0.0, None, arr, arr, 0.0, 0.0, [], [], f"Loaded {path.name}"
+            stack = _one_stack(path.name, arr, {})
+            return (
+                str(path),
+                0,
+                0.0,
+                None,
+                _view(arr, 0.0),
+                arr,
+                centers_html(0, 0, 0),
+                stack,
+                0,
+                {},
+                _slider_for(1, 0),
+                0.0,
+                f"Loaded {path.name}",
+            )
         except Exception as exc:
-            return f"ERROR: {exc}", 0, 0.0, None, None, None, 0.0, 0.0, [], [], log_exception("Load", exc)
+            return (*empty[:-1], log_exception("Load", exc))
 
     progress = ProgressLog(f"LOAD {scan_dir}")
     try:
@@ -177,14 +242,38 @@ def on_load(scan_dir: str, preview_row: float):
         cache = prepare_align_cache(Path(scan_dir), preview_row=row, progress=progress)
         shift = _clamp_shift(cache.log_postalignment or post or 0.0)
         img, msg, base, eff = quick_align_preview(cache, shift, apply_log=True, save_history=True)
-        hist, entries = _gallery_and_entries(scan_dir)
+        pix = float(getattr(cache, "pixel_size_um", 0.0) or 0.0)
+        if pix <= 0:
+            try:
+                from parse_bruker_log import parse_bruker_log
+                from recon_core import find_log_file
+
+                pix = float(parse_bruker_log(find_log_file(Path(scan_dir))).image_pixel_size_um or 0.0)
+            except Exception:
+                pix = 0.0
+        payload = {"pixel_shift": float(shift), "base": float(base), "effective": float(eff)}
+        stack = _one_stack(f"shift {shift:+.2f}", img, payload)
         status = (
             f"Loaded. Detector {height}x{width}. Slice {row} (middle={mid}).\n"
             f"Started at Bruker log alignment {shift:+.3f}.\n{msg}\n{progress.text()}"
         )
-        return text, row, shift, cache, img, img, base, eff, hist, entries, status
+        return (
+            text,
+            row,
+            shift,
+            cache,
+            _view(img, pix),
+            img,
+            _centers(payload),
+            stack,
+            0,
+            payload,
+            _slider_for(1, 0),
+            pix,
+            status,
+        )
     except Exception as exc:
-        return f"ERROR: {exc}", 0, 0.0, None, None, None, 0.0, 0.0, [], [], log_exception("Load", exc)
+        return (*empty[:-1], log_exception("Load", exc))
 
 
 def on_middle_slice(scan_dir: str, cache: Optional[AlignCache]):
@@ -201,62 +290,87 @@ def on_middle_slice(scan_dir: str, cache: Optional[AlignCache]):
     return 0, "Load a scan first."
 
 
-def on_align_sweep(cache, shift_from, shift_to, shift_step, apply_log):
+def _stack_result(stack, pix, status: str):
+    if not stack:
+        return (
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            status,
+        )
+    item = stack[0]
+    img = item["image"]
+    pl = item["payload"]
+    return (
+        _view(img, pix),
+        img,
+        stack,
+        0,
+        pl,
+        _slider_for(len(stack), 0),
+        _centers(pl),
+        status,
+    )
+
+
+def on_align_single(cache, single_shift, apply_log, pix):
     if cache is None:
-        return [], [], None, "Load a scan first."
+        return empty_viewer_html(), None, [], 0, {}, _slider_for(1, 0), centers_html(0, 0, 0), "Load a scan first."
+    progress = ProgressLog("Single alignment")
+    try:
+        shift = _clamp_shift(single_shift)
+        img, msg, base, eff = quick_align_preview(cache, shift, apply_log=bool(apply_log), save_history=True)
+        pl = {"pixel_shift": float(shift), "base": float(base), "effective": float(eff)}
+        stack = _one_stack(f"shift {shift:+.2f}", img, pl)
+        return _stack_result(stack, pix, f"Tested shift {shift:+.3f}.\n{msg}\n{progress.text()}")
+    except Exception as exc:
+        return (
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            log_exception("Single align", exc),
+        )
+
+
+def on_align_sweep(cache, shift_from, shift_to, shift_step, apply_log, pix):
+    if cache is None:
+        return empty_viewer_html(), None, [], 0, {}, _slider_for(1, 0), centers_html(0, 0, 0), "Load a scan first."
     progress = ProgressLog("Alignment sweep")
     try:
         cands = sweep_alignment(
             cache, float(shift_from), float(shift_to), float(shift_step), bool(apply_log), progress
         )
-        return (
-            candidates_to_gallery(cands),
-            _cand_list(cands),
-            cands[0].image if cands else None,
-            f"{len(cands)} alignment options. Click one, then Use this alignment.\n{progress.text()}",
+        stack = _cand_list(cands)
+        return _stack_result(
+            stack,
+            pix,
+            f"{len(stack)} alignments ready - browse with arrows/slider, then Use this alignment.\n{progress.text()}",
         )
     except Exception as exc:
-        return [], [], None, log_exception("Alignment sweep", exc)
+        return (
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            log_exception("Alignment sweep", exc),
+        )
 
 
-def on_pick_candidate(evt, candidates):
-    try:
-        if not candidates:
-            return None, {}, "Generate options first."
-        idx = int(getattr(evt, "index", 0) or 0)
-        idx = max(0, min(idx, len(candidates) - 1))
-        item = candidates[idx]
-        return item["image"], item["payload"], f"Selected: {item['label']}"
-    except Exception as exc:
-        return None, {}, log_exception("Select", exc)
-
-
-def on_use_alignment(payload, cache):
-    if not payload or "pixel_shift" not in payload:
-        return 0.0, 0.0, 0.0, None, "Select an alignment option first."
-    shift = _clamp_shift(payload["pixel_shift"])
+def on_ring_recipes(cache, pixel_shift, snr, la_size, sm_size, drop_ratio, dim, apply_log, pix):
     if cache is None:
-        return shift, 0.0, shift, None, f"Using shift {shift:+.3f}."
-    img, msg, base, eff = quick_align_preview(cache, shift, apply_log=True, save_history=True)
-    return shift, base, eff, img, f"Locked alignment {shift:+.3f}.\n{msg}"
-
-
-def on_nudge(cache, pixel_shift, delta, apply_log):
-    if cache is None:
-        return _clamp_shift(pixel_shift), None, 0.0, 0.0, "Load a scan first."
-    shift = _clamp_shift(float(pixel_shift or 0.0) + float(delta))
-    log_line(f"NUDGE {delta:+.1f} -> {shift:+.3f}")
-    try:
-        img, msg, base, eff = quick_align_preview(cache, shift, apply_log=bool(apply_log), save_history=True)
-        return shift, img, base, eff, msg
-    except Exception as exc:
-        return shift, None, 0.0, 0.0, log_exception("Nudge", exc)
-
-
-def on_ring_sweep(cache, pixel_shift, snr, la_size, sm_size, drop_ratio, dim, apply_log):
-    if cache is None:
-        return [], [], None, "Load a scan first."
-    progress = ProgressLog("Ring options")
+        return empty_viewer_html(), None, [], 0, {}, _slider_for(1, 0), centers_html(0, 0, 0), "Load a scan first."
+    progress = ProgressLog("Ring recipes")
     try:
         cands = sweep_ring_recipes(
             cache,
@@ -269,19 +383,219 @@ def on_ring_sweep(cache, pixel_shift, snr, la_size, sm_size, drop_ratio, dim, ap
             bool(apply_log),
             progress,
         )
-        return (
-            candidates_to_gallery(cands),
-            _cand_list(cands),
-            cands[0].image if cands else None,
-            f"{len(cands)} ring options. Click one, then Use this ring setting.\n{progress.text()}",
+        stack = _cand_list(cands)
+        return _stack_result(
+            stack,
+            pix,
+            f"{len(stack)} ring recipes ready - browse, then Use this ring setting.\n{progress.text()}",
         )
     except Exception as exc:
-        return [], [], None, log_exception("Ring sweep", exc)
+        return (
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            log_exception("Ring recipes", exc),
+        )
+
+
+def on_ring_strength(
+    cache, pixel_shift, ring_method_label, snr_from, snr_to, snr_step, la_size, sm_size, drop_ratio, dim, apply_log, pix
+):
+    if cache is None:
+        return empty_viewer_html(), None, [], 0, {}, _slider_for(1, 0), centers_html(0, 0, 0), "Load a scan first."
+    progress = ProgressLog("Ring strength range")
+    try:
+        method = RING_METHOD_TO_CODE.get(str(ring_method_label), "remove_all_stripe")
+        if method == "none":
+            return (
+                empty_viewer_html(),
+                None,
+                [],
+                0,
+                {},
+                _slider_for(1, 0),
+                centers_html(0, 0, 0),
+                "Pick a ring recipe other than Off before sweeping strength.",
+            )
+        cands = sweep_ring_strength(
+            cache,
+            float(pixel_shift or 0.0),
+            method,
+            float(snr_from),
+            float(snr_to),
+            float(snr_step),
+            int(la_size),
+            int(sm_size),
+            float(drop_ratio),
+            int(dim),
+            bool(apply_log),
+            progress,
+        )
+        stack = _cand_list(cands)
+        return _stack_result(
+            stack,
+            pix,
+            f"{len(stack)} strength options ready - browse, then Use this ring setting.\n{progress.text()}",
+        )
+    except Exception as exc:
+        return (
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            log_exception("Ring strength", exc),
+        )
+
+
+def on_bh_sweep(base_img, bh_from, bh_to, bh_step, pix):
+    if base_img is None:
+        return (
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            "Load or preview a slice first.",
+        )
+    progress = ProgressLog("BH options")
+    try:
+        cands = sweep_beam_hardening(base_img, float(bh_from), float(bh_to), float(bh_step), progress)
+        stack = _cand_list(cands)
+        return _stack_result(
+            stack,
+            pix,
+            f"{len(stack)} BH options ready - browse, then Use this BH.\n{progress.text()}",
+        )
+    except Exception as exc:
+        return (
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            log_exception("BH sweep", exc),
+        )
+
+
+def on_recon_index(idx, stack, pix):
+    if not stack:
+        return empty_viewer_html(), None, {}, 0, _slider_for(1, 0), centers_html(0, 0, 0), "No reconstructions yet."
+    i = max(0, min(int(idx or 0), len(stack) - 1))
+    item = stack[i]
+    img = item["image"]
+    pl = item["payload"]
+    return (
+        _view(img, pix),
+        img,
+        pl,
+        i,
+        _slider_for(len(stack), i),
+        _centers(pl),
+        f"Viewing {i + 1}/{len(stack)}: {item['label']}",
+    )
+
+
+def on_recon_prev(idx, stack, pix):
+    return on_recon_index(max(0, int(idx or 0) - 1), stack, pix)
+
+
+def on_recon_next(idx, stack, pix):
+    n = len(stack) if stack else 1
+    return on_recon_index(min(n - 1, int(idx or 0) + 1), stack, pix)
+
+
+def on_use_alignment(payload, cache, pix):
+    if not payload or "pixel_shift" not in payload:
+        return (
+            0.0,
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            "Browse to an alignment first, then Use this alignment.",
+        )
+    shift = _clamp_shift(payload["pixel_shift"])
+    if cache is None:
+        return (
+            shift,
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, shift),
+            f"Using shift {shift:+.3f}.",
+        )
+    img, msg, base, eff = quick_align_preview(cache, shift, apply_log=True, save_history=True)
+    pl = {"pixel_shift": float(shift), "base": float(base), "effective": float(eff)}
+    stack = _one_stack(f"shift {shift:+.2f}", img, pl)
+    view, work, stack, idx, pl, slider, centers, status = _stack_result(
+        stack, pix, f"Locked alignment {shift:+.3f}.\n{msg}"
+    )
+    return shift, view, work, stack, idx, pl, slider, centers, status
+
+
+def on_nudge(cache, pixel_shift, delta, apply_log, pix):
+    if cache is None:
+        return (
+            _clamp_shift(pixel_shift),
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            "Load a scan first.",
+        )
+    shift = _clamp_shift(float(pixel_shift or 0.0) + float(delta))
+    log_line(f"NUDGE {delta:+.1f} -> {shift:+.3f}")
+    try:
+        img, msg, base, eff = quick_align_preview(cache, shift, apply_log=bool(apply_log), save_history=True)
+        pl = {"pixel_shift": float(shift), "base": float(base), "effective": float(eff)}
+        stack = _one_stack(f"shift {shift:+.2f}", img, pl)
+        view, work, stack, idx, pl, slider, centers, status = _stack_result(stack, pix, msg)
+        return shift, view, work, stack, idx, pl, slider, centers, status
+    except Exception as exc:
+        return (
+            shift,
+            empty_viewer_html(),
+            None,
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, shift),
+            log_exception("Nudge", exc),
+        )
 
 
 def on_use_ring(payload):
     if not payload or "ring_method" not in payload:
-        return ring_label("remove_all_stripe"), 3.0, 51, 21, 0.1, 1, "Select a ring option first."
+        return (
+            ring_label("remove_all_stripe"),
+            3.0,
+            51,
+            21,
+            0.1,
+            1,
+            "Browse to a ring option first, then Use this ring setting.",
+        )
     method = payload["ring_method"]
     return (
         ring_label(method),
@@ -294,35 +608,30 @@ def on_use_ring(payload):
     )
 
 
-def on_bh_sweep(base_img, bh_from, bh_to, bh_step):
-    if base_img is None:
-        return [], [], None, "Load or preview a slice first."
-    progress = ProgressLog("BH options")
-    try:
-        cands = sweep_beam_hardening(base_img, float(bh_from), float(bh_to), float(bh_step), progress)
-        return (
-            candidates_to_gallery(cands),
-            _cand_list(cands),
-            cands[0].image if cands else None,
-            f"{len(cands)} BH options. Click one, then Use this BH.\n{progress.text()}",
-        )
-    except Exception as exc:
-        return [], [], None, log_exception("BH sweep", exc)
-
-
-def on_use_bh(payload, base_img):
+def on_use_bh(payload, base_img, pix):
     if not payload or "bh_strength" not in payload:
-        return 0.0, base_img, "Select a BH option first."
+        return 0.0, empty_viewer_html(), base_img, "Browse to a BH option first."
     s = float(payload["bh_strength"])
     img = apply_simple_beam_hardening(base_img, s) if base_img is not None else None
-    return s, img, f"Locked BH strength {s:.2f}."
+    return s, _view(img, pix), img, f"Locked BH strength {s:.2f}."
 
 
-def on_preview(scan_dir, before_cache, before_key, *ctrl):
+def on_preview(scan_dir, before_cache, before_key, pix, *ctrl):
     scan_dir = (scan_dir or "").strip().strip('"')
     progress = ProgressLog("PREVIEW")
     if not scan_dir:
-        return None, None, before_cache, before_key or "", [], [], "Enter a scan folder."
+        return (
+            empty_viewer_html(),
+            None,
+            before_cache,
+            before_key or "",
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            "Enter a scan folder.",
+        )
     try:
         settings = _settings_from_ui(*ctrl)
         result = run_preview(
@@ -332,18 +641,31 @@ def on_preview(scan_dir, before_cache, before_key, *ctrl):
             cached_before=before_cache,
             cached_before_key=before_key or "",
         )
-        hist, entries = _gallery_and_entries(scan_dir)
-        return (
-            result.display_corr,
-            result.display_corr,
-            result.img_raw,
-            result.before_key,
-            hist,
-            entries,
-            f"{result.message}\n{progress.text()}",
+        pl = {
+            "pixel_shift": float(result.pixel_shift),
+            "base": float(result.base_center),
+            "effective": float(result.center),
+            "ring_method": settings.ring_method if settings.ring_enable else "none",
+            "ring_enable": bool(settings.ring_enable),
+        }
+        stack = _one_stack(f"preview row={result.row}", result.display_corr, pl)
+        view, work, stack, idx, pl, slider, centers, status = _stack_result(
+            stack, pix, f"{result.message}\n{progress.text()}"
         )
+        return view, work, result.img_raw, result.before_key, stack, idx, pl, slider, centers, status
     except Exception as exc:
-        return None, None, before_cache, before_key or "", [], [], log_exception("Preview", exc)
+        return (
+            empty_viewer_html(),
+            None,
+            before_cache,
+            before_key or "",
+            [],
+            0,
+            {},
+            _slider_for(1, 0),
+            centers_html(0, 0, 0),
+            log_exception("Preview", exc),
+        )
 
 
 def on_full(scan_dir, *ctrl):
@@ -383,17 +705,18 @@ def on_save_recipe(name: str, *ctrl):
         return log_exception("Save recipe", exc), gr.update()
 
 
-def on_history_select(evt, entries):
-    try:
-        if not entries:
-            return None, *ui_tuple(load_settings(DEFAULT_CFG)), "No history."
-        idx = int(getattr(evt, "index", 0) or 0)
-        item = entries[max(0, min(idx, len(entries) - 1))]
-        cfg = item.get("settings") or {}
-        s = Settings.from_config_dict(cfg) if cfg else load_settings(DEFAULT_CFG)
-        return item.get("image"), *ui_tuple(s), f"Restored:\n{item.get('caption', '')}"
-    except Exception as exc:
-        return None, *ui_tuple(load_settings(DEFAULT_CFG)), log_exception("History", exc)
+def on_align_mode(mode: str):
+    import gradio as gr
+
+    single = mode == "Single value"
+    return gr.update(visible=single), gr.update(visible=not single)
+
+
+def on_ring_mode(mode: str):
+    import gradio as gr
+
+    recipes = mode == "Try recipes"
+    return gr.update(visible=recipes), gr.update(visible=not recipes)
 
 
 def build_app():
@@ -417,7 +740,9 @@ def build_app():
         th = build_theme()
         if th is not None:
             blocks_kwargs["theme"] = th
-        blocks_kwargs["css"] = GUI_CSS
+    blocks_kwargs["css"] = GUI_CSS
+    if "head" in sig.parameters:
+        blocks_kwargs["head"] = VIEWER_HEAD
 
     with gr.Blocks(**blocks_kwargs) as demo:
         gr.HTML(
@@ -425,7 +750,8 @@ def build_app():
             <div class="ct-header">
               <div>
                 <div class="ct-brand">Bruker CT <span>Algotom</span></div>
-                <div class="ct-sub">Generate a range → pick the best → lock it in {_tip('Same idea as NRecon: you choose, the tool does not guess forever.')}</div>
+                <div class="ct-sub">Generate options → browse Reconstruction → lock it in
+                {tip_html('Same idea as NRecon: you choose. Hover any teal i for help.')}</div>
               </div>
             </div>
             """
@@ -434,50 +760,71 @@ def build_app():
         align_cache = gr.State(None)
         before_cache = gr.State(None)
         before_key = gr.State("")
-        active_cands = gr.State([])
+        recon_stack = gr.State([])
+        recon_idx = gr.State(0)
         pending = gr.State({})
-        history_entries = gr.State([])
         work_img = gr.State(None)
+        pixel_um = gr.State(0.0)
 
         pixel_shift = gr.Number(value=0.0, visible=False)
         bh_strength = gr.Number(value=0.0, visible=False)
         apply_log = gr.Checkbox(value=True, visible=False)
 
-        with gr.Row(elem_classes=["ct-panel"]):
-            scan_dir = gr.Textbox(label="Scan folder", placeholder=r"D:\Results\...\MyScan", scale=4, elem_classes=["ct-mono"])
-            preview_row = gr.Number(value=0, label="Slice #", precision=0, scale=1)
+        with gr.Row(elem_classes=["ct-panel", "ct-scan-row"]):
+            scan_dir = gr.Textbox(
+                label="Scan folder",
+                placeholder=r"D:\Results\...\MyScan",
+                scale=4,
+                elem_classes=["ct-mono"],
+            )
+            btn_browse = gr.Button("Browse...", scale=1)
+            preview_row = gr.Number(value=0, label="Slice number", precision=0, scale=1)
             btn_mid = gr.Button("Middle (fastest)", scale=1)
             btn_load = gr.Button("Load scan", variant="primary", scale=1)
 
+        gr.HTML(_help("Paste a path or Browse to pick the folder (not a file).", "folder"))
         scan_info = gr.Textbox(label="Scan info", interactive=False, lines=2, elem_classes=["ct-mono"])
 
         with gr.Row():
             with gr.Column(scale=2, min_width=340, elem_classes=["ct-panel"]):
                 with gr.Tabs():
                     with gr.Tab("Align"):
-                        gr.HTML(
-                            f"<div class='ct-help'>From / To / Step → Generate → click best → Use this alignment. "
-                            f"{_tip(INFO['shift'])}</div>"
+                        gr.HTML(_help("Line up the rotation center until edges look sharp.", "shift"))
+                        align_mode = gr.Radio(
+                            choices=["Single value", "Range"],
+                            value="Range",
+                            label="Mode",
                         )
-                        with gr.Row():
-                            shift_from = gr.Number(value=-5.0, label="From", precision=2)
-                            shift_to = gr.Number(value=15.0, label="To", precision=2)
-                            shift_step = gr.Number(value=5.0, label="Step", precision=2)
-                        btn_align_sweep = gr.Button("Generate alignment options", variant="primary")
+                        with gr.Group(visible=False) as align_single_box:
+                            gr.HTML(_help("Type one shift and test it.", "single_align"))
+                            single_shift = gr.Number(value=0.0, label="Center shift (pixels)", precision=3)
+                            btn_align_single = gr.Button("Test this alignment", variant="primary")
+                        with gr.Group(visible=True) as align_range_box:
+                            gr.HTML(_help("Build several shifts to compare.", "range_align"))
+                            with gr.Row():
+                                shift_from = gr.Number(value=-10.0, label="From", precision=2)
+                                shift_to = gr.Number(value=10.0, label="To", precision=2)
+                                shift_step = gr.Number(value=5.0, label="Step", precision=2)
+                            btn_align_sweep = gr.Button("Generate alignment options", variant="primary")
+
+                        gr.HTML(_help("Optional fine polish after you are close.", "nudge"))
                         with gr.Row(elem_classes=["ct-nudge"]):
-                            btn_m1 = gr.Button("-1")
-                            btn_m05 = gr.Button("-0.5")
-                            btn_p05 = gr.Button("+0.5")
-                            btn_p1 = gr.Button("+1")
+                            btn_m1 = gr.Button("Nudge -1")
+                            btn_m05 = gr.Button("Nudge -0.5")
+                            btn_p05 = gr.Button("Nudge +0.5")
+                            btn_p1 = gr.Button("Nudge +1")
+
+                        centers_box = gr.HTML(centers_html(0, 0, 0))
+                        gr.HTML(_help("Read-only numbers for the reconstruction you are viewing.", "centers"))
                         btn_use_align = gr.Button("Use this alignment", variant="secondary")
-                        with gr.Row():
-                            base_out = gr.Number(0, label="Base center", interactive=False)
-                            eff_out = gr.Number(0, label="Effective center", interactive=False)
 
                     with gr.Tab("Rings"):
                         gr.HTML(
-                            f"<div class='ct-help'>Generate recipes → click best → Use this ring setting. "
-                            f"{_tip(INFO['ring_method'])}</div>"
+                            _help(
+                                "Ring recipes come from Algotom stripe filters. "
+                                "Try recipes, or sweep strength for the current recipe.",
+                                "ring_method",
+                            )
                         )
                         with gr.Row(elem_classes=["ct-preset-row"]):
                             preset = _dd(choices=_preset_choices(), value="default", label="Preset")
@@ -487,20 +834,41 @@ def build_app():
                             value=ring_label(defaults.ring_method),
                             label="Current ring recipe",
                         )
-                        with gr.Accordion("Fine knobs (optional)", open=False):
-                            snr = gr.Slider(1.0, 10.0, value=defaults.snr, step=0.1, label="Strength gate")
+                        ring_mode = gr.Radio(
+                            choices=["Try recipes", "Strength range"],
+                            value="Try recipes",
+                            label="Mode",
+                        )
+                        with gr.Group(visible=True) as ring_recipes_box:
+                            gr.HTML(_help("Runs Off / All / Fine / Large at your current alignment.", "ring_recipes"))
+                            btn_ring_recipes = gr.Button("Generate ring recipes", variant="primary")
+                        with gr.Group(visible=False) as ring_strength_box:
+                            gr.HTML(_help("Varies Algotom SNR (strength gate) for the current recipe.", "ring_strength"))
+                            with gr.Row():
+                                snr_from = gr.Number(value=1.5, label="SNR from", precision=2)
+                                snr_to = gr.Number(value=6.0, label="SNR to", precision=2)
+                                snr_step = gr.Number(value=1.5, label="Step", precision=2)
+                            btn_ring_strength = gr.Button("Generate strength options", variant="primary")
+
+                        with gr.Accordion("Fine knobs (Algotom parameters)", open=False):
+                            snr = gr.Slider(1.0, 10.0, value=defaults.snr, step=0.1, label="Strength gate (snr)")
+                            gr.HTML(tip_html(INFO["snr"]))
                             la_size = gr.Slider(3, 151, value=defaults.la_size, step=2, label="Large-ring width")
+                            gr.HTML(tip_html(INFO["la_size"]))
                             sm_size = gr.Slider(3, 101, value=defaults.sm_size, step=2, label="Fine smoothing")
+                            gr.HTML(tip_html(INFO["sm_size"]))
                             drop_ratio = gr.Slider(0.0, 0.5, value=defaults.drop_ratio, step=0.01, label="Cleanup amount")
+                            gr.HTML(tip_html(INFO["drop_ratio"]))
                             dim = gr.Radio(choices=[1, 2], value=defaults.dim, label="Stripe axis")
-                        btn_ring_sweep = gr.Button("Generate ring options", variant="primary")
+                            gr.HTML(tip_html(INFO["dim"]))
+
                         btn_use_ring = gr.Button("Use this ring setting", variant="secondary")
                         with gr.Row(elem_classes=["ct-preset-row"]):
                             recipe_name = gr.Textbox(label="Save recipe as", placeholder="my_sample")
                             btn_save = gr.Button("Save")
 
                     with gr.Tab("Beam hardening"):
-                        gr.HTML("<div class='ct-help'>Simple post curve. Generate → pick → Use this BH.</div>")
+                        gr.HTML(_help("Simple post curve on the finished slice (not full physics).", "bh"))
                         with gr.Row():
                             bh_from = gr.Number(value=0.0, label="From", precision=2)
                             bh_to = gr.Number(value=2.0, label="To", precision=2)
@@ -509,120 +877,218 @@ def build_app():
                         btn_use_bh = gr.Button("Use this BH", variant="secondary")
 
                     with gr.Tab("Run"):
-                        speed = gr.Radio(choices=speed_choices, value=speed_label(defaults.recon_type), label="Speed")
+                        gr.HTML(_help("Fast for tuning; Careful 3D for the final volume.", "speed"))
+                        speed = gr.Radio(
+                            choices=speed_choices, value=speed_label(defaults.recon_type), label="Speed"
+                        )
                         output_dir = gr.Textbox(value="", label="Output override (optional)")
                         btn_preview = gr.Button("Preview this slice", variant="primary")
                         btn_full = gr.Button("Reconstruct full volume", variant="stop")
 
             with gr.Column(scale=4, min_width=520, elem_classes=["ct-panel", "ct-viewer-wrap"]):
-                main_img = gr.Image(label="Viewer", type="numpy", height=560)
-                options_gallery = gr.Gallery(label="Options — click one, then Use…", columns=5, height=200)
-                history_gallery = gr.Gallery(label="History — click to restore", columns=6, height=160)
+                gr.HTML(_help("Reconstruction", "viewer"))
+                main_view = gr.HTML(value=empty_viewer_html())
+                with gr.Row(elem_classes=["ct-nudge"]):
+                    btn_recon_prev = gr.Button("< Previous", scale=1)
+                    recon_slider = gr.Slider(
+                        minimum=0,
+                        maximum=0,
+                        value=0,
+                        step=1,
+                        label="Browse results",
+                        interactive=False,
+                        scale=3,
+                    )
+                    btn_recon_next = gr.Button("Next >", scale=1)
 
         status = gr.Textbox(label="Log", lines=7, value=startup_banner(), elem_classes=["ct-mono", "ct-panel"])
 
         recon_controls = [
-            ring_method, snr, la_size, sm_size, drop_ratio, dim,
-            speed, apply_log, pixel_shift, preview_row, output_dir,
+            ring_method,
+            snr,
+            la_size,
+            sm_size,
+            drop_ratio,
+            dim,
+            speed,
+            apply_log,
+            pixel_shift,
+            preview_row,
+            output_dir,
         ]
-        all_controls = [*recon_controls, bh_strength]
+        stack_outs = [main_view, work_img, recon_stack, recon_idx, pending, recon_slider, centers_box, status]
+        use_align_outs = [
+            pixel_shift,
+            main_view,
+            work_img,
+            recon_stack,
+            recon_idx,
+            pending,
+            recon_slider,
+            centers_box,
+            status,
+        ]
+        nav_outs = [main_view, work_img, pending, recon_idx, recon_slider, centers_box, status]
+        preview_outs = [
+            main_view,
+            work_img,
+            before_cache,
+            before_key,
+            recon_stack,
+            recon_idx,
+            pending,
+            recon_slider,
+            centers_box,
+            status,
+        ]
 
+        align_mode.change(on_align_mode, inputs=[align_mode], outputs=[align_single_box, align_range_box])
+        ring_mode.change(on_ring_mode, inputs=[ring_mode], outputs=[ring_recipes_box, ring_strength_box])
+
+        btn_browse.click(on_browse_folder, inputs=[scan_dir], outputs=[scan_dir])
         btn_mid.click(on_middle_slice, inputs=[scan_dir, align_cache], outputs=[preview_row, status])
         btn_load.click(
             on_load,
             inputs=[scan_dir, preview_row],
             outputs=[
-                scan_info, preview_row, pixel_shift, align_cache, main_img, work_img,
-                base_out, eff_out, history_gallery, history_entries, status,
+                scan_info,
+                preview_row,
+                pixel_shift,
+                align_cache,
+                main_view,
+                work_img,
+                centers_box,
+                recon_stack,
+                recon_idx,
+                pending,
+                recon_slider,
+                pixel_um,
+                status,
             ],
         )
 
+        btn_align_single.click(
+            on_align_single,
+            inputs=[align_cache, single_shift, apply_log, pixel_um],
+            outputs=stack_outs,
+        )
         btn_align_sweep.click(
             on_align_sweep,
-            inputs=[align_cache, shift_from, shift_to, shift_step, apply_log],
-            outputs=[options_gallery, active_cands, main_img, status],
-        )
-        btn_ring_sweep.click(
-            on_ring_sweep,
-            inputs=[align_cache, pixel_shift, snr, la_size, sm_size, drop_ratio, dim, apply_log],
-            outputs=[options_gallery, active_cands, main_img, status],
-        )
-        btn_bh_sweep.click(
-            on_bh_sweep,
-            inputs=[work_img, bh_from, bh_to, bh_step],
-            outputs=[options_gallery, active_cands, main_img, status],
+            inputs=[align_cache, shift_from, shift_to, shift_step, apply_log, pixel_um],
+            outputs=stack_outs,
         )
 
-        options_gallery.select(on_pick_candidate, inputs=[active_cands], outputs=[main_img, pending, status])
+        btn_m1.click(
+            lambda c, s, a, p: on_nudge(c, s, -1.0, a, p),
+            inputs=[align_cache, pixel_shift, apply_log, pixel_um],
+            outputs=use_align_outs,
+        )
+        btn_m05.click(
+            lambda c, s, a, p: on_nudge(c, s, -0.5, a, p),
+            inputs=[align_cache, pixel_shift, apply_log, pixel_um],
+            outputs=use_align_outs,
+        )
+        btn_p05.click(
+            lambda c, s, a, p: on_nudge(c, s, 0.5, a, p),
+            inputs=[align_cache, pixel_shift, apply_log, pixel_um],
+            outputs=use_align_outs,
+        )
+        btn_p1.click(
+            lambda c, s, a, p: on_nudge(c, s, 1.0, a, p),
+            inputs=[align_cache, pixel_shift, apply_log, pixel_um],
+            outputs=use_align_outs,
+        )
 
         btn_use_align.click(
             on_use_alignment,
-            inputs=[pending, align_cache],
-            outputs=[pixel_shift, base_out, eff_out, main_img, status],
-        ).then(lambda i: i, inputs=[main_img], outputs=[work_img])
+            inputs=[pending, align_cache, pixel_um],
+            outputs=use_align_outs,
+        )
 
-        btn_m1.click(
-            lambda c, s, a: on_nudge(c, s, -1.0, a),
-            inputs=[align_cache, pixel_shift, apply_log],
-            outputs=[pixel_shift, main_img, base_out, eff_out, status],
-        ).then(lambda i: i, inputs=[main_img], outputs=[work_img])
-        btn_m05.click(
-            lambda c, s, a: on_nudge(c, s, -0.5, a),
-            inputs=[align_cache, pixel_shift, apply_log],
-            outputs=[pixel_shift, main_img, base_out, eff_out, status],
-        ).then(lambda i: i, inputs=[main_img], outputs=[work_img])
-        btn_p05.click(
-            lambda c, s, a: on_nudge(c, s, 0.5, a),
-            inputs=[align_cache, pixel_shift, apply_log],
-            outputs=[pixel_shift, main_img, base_out, eff_out, status],
-        ).then(lambda i: i, inputs=[main_img], outputs=[work_img])
-        btn_p1.click(
-            lambda c, s, a: on_nudge(c, s, 1.0, a),
-            inputs=[align_cache, pixel_shift, apply_log],
-            outputs=[pixel_shift, main_img, base_out, eff_out, status],
-        ).then(lambda i: i, inputs=[main_img], outputs=[work_img])
-
+        btn_ring_recipes.click(
+            on_ring_recipes,
+            inputs=[align_cache, pixel_shift, snr, la_size, sm_size, drop_ratio, dim, apply_log, pixel_um],
+            outputs=stack_outs,
+        )
+        btn_ring_strength.click(
+            on_ring_strength,
+            inputs=[
+                align_cache,
+                pixel_shift,
+                ring_method,
+                snr_from,
+                snr_to,
+                snr_step,
+                la_size,
+                sm_size,
+                drop_ratio,
+                dim,
+                apply_log,
+                pixel_um,
+            ],
+            outputs=stack_outs,
+        )
         btn_use_ring.click(
             on_use_ring,
             inputs=[pending],
             outputs=[ring_method, snr, la_size, sm_size, drop_ratio, dim, status],
         )
-        btn_use_bh.click(on_use_bh, inputs=[pending, work_img], outputs=[bh_strength, main_img, status])
 
-        btn_preset.click(on_apply_preset, inputs=[preset], outputs=[*all_controls, status])
-        btn_save.click(on_save_recipe, inputs=[recipe_name, *all_controls], outputs=[status, preset])
+        btn_bh_sweep.click(
+            on_bh_sweep,
+            inputs=[work_img, bh_from, bh_to, bh_step, pixel_um],
+            outputs=stack_outs,
+        )
+        btn_use_bh.click(
+            on_use_bh,
+            inputs=[pending, work_img, pixel_um],
+            outputs=[bh_strength, main_view, work_img, status],
+        )
 
-        btn_preview.click(
-            on_preview,
-            inputs=[scan_dir, before_cache, before_key, *recon_controls],
+        recon_slider.change(on_recon_index, inputs=[recon_slider, recon_stack, pixel_um], outputs=nav_outs)
+        btn_recon_prev.click(on_recon_prev, inputs=[recon_idx, recon_stack, pixel_um], outputs=nav_outs)
+        btn_recon_next.click(on_recon_next, inputs=[recon_idx, recon_stack, pixel_um], outputs=nav_outs)
+
+        btn_preset.click(
+            on_apply_preset,
+            inputs=[preset],
             outputs=[
-                main_img,
-                work_img,
-                before_cache,
-                before_key,
-                history_gallery,
-                history_entries,
+                ring_method,
+                snr,
+                la_size,
+                sm_size,
+                drop_ratio,
+                dim,
+                speed,
+                apply_log,
+                pixel_shift,
+                preview_row,
+                output_dir,
+                bh_strength,
                 status,
             ],
         )
-        btn_full.click(on_full, inputs=[scan_dir, *recon_controls], outputs=[status])
+        btn_save.click(on_save_recipe, inputs=[recipe_name, *recon_controls], outputs=[status, preset])
 
-        history_gallery.select(
-            on_history_select,
-            inputs=[history_entries],
-            outputs=[main_img, *all_controls, status],
+        btn_preview.click(
+            on_preview,
+            inputs=[scan_dir, before_cache, before_key, pixel_um, *recon_controls],
+            outputs=preview_outs,
         )
+        btn_full.click(on_full, inputs=[scan_dir, *recon_controls], outputs=[status])
 
     return demo
 
 
 def _pids_listening_on_port(port: int) -> list[int]:
+    """Windows: PIDs with a LISTENING socket on this port."""
     import subprocess
 
     try:
         out = subprocess.check_output(["netstat", "-ano"], text=True, errors="ignore")
     except (OSError, subprocess.CalledProcessError):
         return []
+
     needle = f":{port}"
     pids: set[int] = set()
     for line in out.splitlines():
@@ -632,24 +1098,31 @@ def _pids_listening_on_port(port: int) -> list[int]:
         if len(parts) < 2:
             continue
         local = parts[1]
-        if local.endswith(needle) or local.endswith(f"]{needle}"):
-            try:
-                pids.add(int(parts[-1]))
-            except ValueError:
-                pass
+        if not (local.endswith(needle) or local.endswith(f"]{needle}")):
+            continue
+        try:
+            pids.add(int(parts[-1]))
+        except ValueError:
+            continue
     return sorted(pids)
 
 
 def _reclaim_port(port: int) -> None:
+    """End any previous process holding the toolkit port so startup always works."""
     import subprocess
     import time
 
     pids = [p for p in _pids_listening_on_port(port) if p != os.getpid()]
     if not pids:
         return
-    print(f"Port {port} busy — closing {pids}")
+    print(f"Port {port} in use by PID(s) {pids} - closing previous toolkit instance...")
     for pid in pids:
-        subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"], capture_output=True, check=False)
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F", "/T"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     for _ in range(20):
         if not _pids_listening_on_port(port):
             break
@@ -657,12 +1130,15 @@ def _reclaim_port(port: int) -> None:
 
 
 def _gradio_allowed_paths() -> list[str]:
+    """Let Gradio read history/QC on any local drive (lab PCs often use D:\\Results)."""
     paths = [str(ROOT.resolve())]
     if os.name == "nt":
         for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
             root = f"{letter}:\\"
             if os.path.isdir(root):
                 paths.append(root)
+    else:
+        paths.append("/")
     return paths
 
 
@@ -670,21 +1146,15 @@ def main() -> None:
     port = 7860
     _reclaim_port(port)
     print(f"Opening GUI at http://127.0.0.1:{port}")
-    print(f"Log file: {log_path()}")
+    print(f"Activity log file: {log_path()}")
     demo = build_app()
-    theme = build_theme()
     launch_kwargs: Dict[str, Any] = {
         "server_name": "127.0.0.1",
         "server_port": port,
-        "inbrowser": False,
+        "inbrowser": True,
         "show_error": True,
     }
-    sig = inspect.signature(demo.launch)
-    if "theme" in sig.parameters and theme is not None:
-        launch_kwargs["theme"] = theme
-    if "css" in sig.parameters:
-        launch_kwargs["css"] = GUI_CSS
-    if "allowed_paths" in sig.parameters:
+    if "allowed_paths" in inspect.signature(demo.launch).parameters:
         launch_kwargs["allowed_paths"] = _gradio_allowed_paths()
     demo.queue().launch(**launch_kwargs)
 

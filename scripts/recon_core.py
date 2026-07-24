@@ -543,6 +543,12 @@ def run_preview(
     from algotom.io import loadersaver as losa
 
     from history_store import before_cache_key, save_history_entry
+    from preview_cache import (
+        format_params_log,
+        load_cached_preview,
+        preview_params_key,
+        save_cached_preview,
+    )
 
     scan_dir, log_path, meta, proj_paths, height, width = _prepare_scan(scan_dir, progress)
     mid = height // 2
@@ -556,6 +562,59 @@ def run_preview(
 
     recon_type = (settings.recon_type or "FBP").upper()
     rings_on = bool(settings.ring_enable) and settings.ring_method != "none"
+    shift_guess = float(settings.pixel_shift or 0.0)
+    cache_params = preview_params_key(
+        scan_dir,
+        kind="preview",
+        row=row,
+        pixel_shift=shift_guess,
+        ring_enable=rings_on,
+        ring_method=settings.ring_method if rings_on else "none",
+        snr=float(settings.snr),
+        la_size=int(settings.la_size),
+        sm_size=int(settings.sm_size),
+        drop_ratio=float(settings.drop_ratio),
+        dim=int(settings.dim),
+        recon_type=recon_type,
+        filter_name=str(settings.filter_name or "hann"),
+        apply_log=bool(settings.apply_log),
+    )
+    cached = load_cached_preview(scan_dir, cache_params)
+    if cached is not None:
+        disp, _folder = cached
+        _log(f"recon already exists ({format_params_log(cache_params)})", progress)
+        base_c = float(width) / 2.0
+        center = base_c + shift_guess
+        key = before_cache_key(
+            str(scan_dir), row, center, recon_type, settings.method, settings.apply_log, settings.filter_name
+        )
+        used = deepcopy(settings)
+        used.center = center
+        used.pixel_shift = shift_guess
+        used.preview_row = row
+        return PreviewResult(
+            out_dir=out,
+            center=center,
+            base_center=base_c,
+            pixel_shift=shift_guess,
+            row=row,
+            height=height,
+            width=width,
+            n_projections=len(proj_paths),
+            img_raw=disp,
+            img_corr=disp,
+            display_raw=disp,
+            display_corr=disp,
+            settings=used,
+            meta=meta,
+            message=f"recon already exists ({format_params_log(cache_params)})",
+            before_reused=True,
+            history_dir=None,
+            before_key=key,
+            display_diff=None,
+            qc_metrics=None,
+        )
+
     _log(f"Preview mode={recon_type}  row={row}/{height - 1}  rings={'ON' if rings_on else 'OFF'}", progress)
 
     before_reused = False
@@ -671,6 +730,24 @@ def run_preview(
         images={"before": img_raw, "after": img_corr, "diff": disp_diff},
         extra=f"before_reused={before_reused}  row={row}  {qc_line}",
     )
+
+    save_params = preview_params_key(
+        scan_dir,
+        kind="preview",
+        row=row,
+        pixel_shift=float(settings.pixel_shift or 0.0),
+        ring_enable=rings_on,
+        ring_method=settings.ring_method if rings_on else "none",
+        snr=float(settings.snr),
+        la_size=int(settings.la_size),
+        sm_size=int(settings.sm_size),
+        drop_ratio=float(settings.drop_ratio),
+        dim=int(settings.dim),
+        recon_type=recon_type,
+        filter_name=str(settings.filter_name or "hann"),
+        apply_log=bool(settings.apply_log),
+    )
+    save_cached_preview(scan_dir, save_params, disp_corr)
 
     msg = (
         f"Preview OK ({recon_type}). base={base_c:.3f} shift={shift_c:+.3f} "
@@ -882,9 +959,41 @@ def quick_align_preview(
     apply_log: bool = True,
     save_history: bool = True,
 ) -> Tuple[np.ndarray, str, float, float]:
-    """Fast FBP preview from cached sinogram (no rings, no disk)."""
+    """Fast FBP preview from cached sinogram (no rings). Disk-caches under algotom/previews/."""
+    from preview_cache import (
+        format_params_log,
+        load_cached_preview,
+        preview_params_key,
+        save_cached_preview,
+    )
+
     shift = float(pixel_shift or 0.0)
     center = float(cache.base_center) + shift
+    scan = Path(cache.scan_dir)
+    params = preview_params_key(
+        scan,
+        kind="align",
+        row=int(cache.row),
+        pixel_shift=shift,
+        ring_enable=False,
+        ring_method="none",
+        snr=0.0,
+        la_size=0,
+        sm_size=0,
+        drop_ratio=0.0,
+        dim=1,
+        apply_log=bool(apply_log),
+    )
+    hit = load_cached_preview(scan, params)
+    if hit is not None:
+        disp, _folder = hit
+        _log(f"recon already exists ({format_params_log(params)})")
+        msg = (
+            f"QUICK ALIGN (disk cache) | base={cache.base_center:.3f}  shift={shift:+.3f}  "
+            f"effective={center:.3f}  row={cache.row}"
+        )
+        return disp, msg, float(cache.base_center), float(center)
+
     settings = Settings(
         recon_type="FBP",
         method="FBP_CUDA",
@@ -902,11 +1011,14 @@ def quick_align_preview(
         settings.method = "FBP"
         img = reconstruct_sinogram(np.asarray(cache.sino, dtype=np.float32).copy(), center, cache.thetas, settings)
 
+    disp = _norm_display(img)
+    save_cached_preview(scan, params, disp)
+
     if save_history:
         from history_store import save_history_entry
 
         save_history_entry(
-            Path(cache.scan_dir),
+            scan,
             kind="align",
             settings_dict=settings.to_config_dict(),
             images={"align": img},
@@ -915,9 +1027,9 @@ def quick_align_preview(
 
     msg = (
         f"QUICK ALIGN | base={cache.base_center:.3f}  shift={shift:+.3f}  "
-        f"effective={center:.3f}  row={cache.row}  (cached, FBP, no rings)"
+        f"effective={center:.3f}  row={cache.row}  (FBP, no rings)"
     )
-    return _norm_display(img), msg, float(cache.base_center), float(center)
+    return disp, msg, float(cache.base_center), float(center)
 
 
 def auto_tune_pixel_shift(

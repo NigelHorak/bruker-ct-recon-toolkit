@@ -29,13 +29,15 @@ Double-click **`Start Toolkit.bat`** — browser opens at `http://127.0.0.1:7860
 
 ### 4) In the GUI
 1. Paste scan folder → **Load scan**
-2. **Align** — nudge / Auto-find best until the viewer looks sharp
-3. **Rings** — preset or Try all cleaners
+2. **Align** — Generate a shift range (or nudge) → browse **Reconstruction** with arrows/slider → **Use this alignment**
+3. **Rings** — Generate recipes → browse → **Use this ring setting**
 4. **Run** — Preview this slice → when happy, Reconstruct full volume
-5. Click **History** thumbnails to reload an earlier look
+
+Same settings reuse a cached preview under `algotom\previews\` (no popup; check the Log).
 
 Outputs are saved under the scan folder:
 
+`...\MyScan\algotom\previews\`  
 `...\MyScan\algotom\history\`  
 `...\MyScan\algotom\preview\`  
 `...\MyScan\algotom\recon_YYYYMMDD_HHMMSS\`

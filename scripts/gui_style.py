@@ -67,24 +67,9 @@ html, body {
   padding: 0.7rem 0.85rem 0.9rem !important;
   box-shadow: 0 12px 30px rgba(20,32,51,0.06) !important;
   backdrop-filter: blur(8px);
+  overflow: visible !important;
 }
 
-.ct-i {
-  display: inline-flex;
-  width: 1.05rem;
-  height: 1.05rem;
-  border-radius: 999px;
-  background: var(--ct-teal);
-  color: #fff;
-  font-size: 0.72rem;
-  font-weight: 700;
-  align-items: center;
-  justify-content: center;
-  cursor: help;
-  margin-left: 0.35rem;
-  vertical-align: middle;
-  line-height: 1;
-}
 .ct-help {
   color: var(--ct-muted);
   font-size: 0.88rem;
@@ -105,15 +90,8 @@ html, body {
   align-items: end !important;
 }
 
-.ct-viewer-wrap .image-container,
-.ct-viewer-wrap img {
-  max-height: min(72vh, 820px) !important;
-  object-fit: contain !important;
-}
-
-.ct-history .gallery,
-.ct-history {
-  min-height: 140px;
+.ct-viewer-wrap {
+  min-height: 420px;
 }
 
 button.primary {
@@ -135,6 +113,69 @@ button.stop {
 }
 
 footer { display: none !important; }
+
+/* Hover info tips (also in viewer_html VIEWER_HEAD) */
+.ct-tip {
+  position: relative;
+  display: inline-flex;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 999px;
+  background: #0f766e;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+  line-height: 1;
+  border: none;
+  flex-shrink: 0;
+}
+.ct-tip:focus { outline: 2px solid #0f766e; outline-offset: 2px; }
+.ct-tip-bubble {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  min-width: 14rem;
+  max-width: 20rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: #142033;
+  color: #f4f7fb;
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.35;
+  text-align: left;
+  z-index: 10050;
+  box-shadow: 0 10px 28px rgba(20,32,51,0.35);
+  pointer-events: none;
+  white-space: normal;
+}
+.ct-tip-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: #142033;
+}
+.ct-tip:hover .ct-tip-bubble,
+.ct-tip:focus .ct-tip-bubble,
+.ct-tip:focus-within .ct-tip-bubble { display: block; }
+
+.ct-scan-row {
+  display: flex !important;
+  align-items: flex-end !important;
+  gap: 0.55rem !important;
+}
+.ct-scan-row > * { margin-top: 0 !important; margin-bottom: 0 !important; }
+.ct-scan-row button { height: 42px !important; }
 
 @media (max-width: 1100px) {
   .ct-nudge { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
