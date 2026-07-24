@@ -1,28 +1,38 @@
-# Default reconstruction settings for Bruker TIFF + .log scans
-# Edit these for stubborn ring artifacts; keep a copy per sample if needed.
+# Full adjustable defaults for Bruker TIFF + .log reconstruction.
+# The GUI loads this file; presets override sections of it.
 
 ring:
-  # Algotom remove_all_stripe (algo-6543)
+  enable: true
+  # remove_all_stripe | remove_stripe_based_sorting | remove_large_stripe | remove_dead_stripe | none
+  method: remove_all_stripe
+  # Higher snr = less sensitive (fewer stripes detected)
   snr: 3.0
+  # Odd window sizes for median filters
   la_size: 51
   sm_size: 21
+  drop_ratio: 0.1
+  dim: 1
 
 recon:
+  # FBP_CUDA | SIRT_CUDA | SART_CUDA | CGLS_CUDA | FBP | SIRT | SART | CGLS
   method: FBP_CUDA
-  apply_log: true
-  # Number of detector rows (sinograms) processed per GPU batch
-  chunk_size: 32
-  # If null, Algotom auto-finds center of rotation on the mid sinogram
-  center: null
   filter_name: hann
+  apply_log: true
+  # Used by iterative methods (SIRT/SART/CGLS)
+  num_iter: 100
+  chunk_size: 32
+  # auto | manual
+  center_mode: auto
+  # Used when center_mode is manual
+  center: null
+
+preview:
+  # null = middle detector row
+  row: null
 
 io:
-  # Glob patterns relative to scan folder (case-insensitive match in code)
-  projection_glob: "*.tif"
-  # Prefer 16-bit float TIFF slices for analysis headroom
-  output_dtype: float32
   save_preview: true
 
 paths:
-  # Relative to scan dir unless absolute; empty = <scan>_algotom_recon
+  # Empty = auto folder next to the scan
   output_dir: ""

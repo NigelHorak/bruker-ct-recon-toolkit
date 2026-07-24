@@ -96,6 +96,9 @@ Write-Step "Installing Algotom + deps from conda-forge"
 Write-Step "Installing Astra Toolbox (GPU)"
 & $condaExe install -y -n $EnvName -c astra-toolbox -c nvidia astra-toolbox
 
+Write-Step "Installing Gradio (GUI)"
+& $condaExe run -n $EnvName python -m pip install --upgrade "gradio>=4.0"
+
 # --- activate helper ---
 Write-Step "Writing env\activate.ps1"
 $envDir = Join-Path $Root "env"
@@ -121,7 +124,6 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "SETUP COMPLETE" -ForegroundColor Green
-Write-Host "Next:"
-Write-Host "  .\run_recon.ps1 -ScanDir `"D:\path\to\bruker_scan`""
-Write-Host "Or activate manually:"
-Write-Host "  .\env\activate.ps1"
+Write-Host "Next (no more commands needed):"
+Write-Host "  Double-click  Start Toolkit.bat"
+Write-Host "Then paste your Bruker scan folder path into the GUI and click Preview."
