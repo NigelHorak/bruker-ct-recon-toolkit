@@ -490,6 +490,9 @@ class PreviewResult:
     settings: Settings
     meta: BrukerLogMeta
     message: str
+    before_reused: bool = False
+    history_dir: Optional[Path] = None
+    before_key: str = ""
 
 
 @dataclass
@@ -521,8 +524,20 @@ def run_preview(
     settings: Settings,
     out_dir: Optional[Path] = None,
     progress: ProgressCb = None,
+    cached_before: Optional[np.ndarray] = None,
+    cached_before_key: str = "",
 ) -> PreviewResult:
+    """
+    Preview mid (or chosen) slice.
+
+    Efficiency:
+    - If rings are OFF: only ONE reconstruction (before == after).
+    - If cached_before matches geometry/align key: reuse BEFORE, only rebuild AFTER.
+    - Otherwise builds BEFORE once, then AFTER with rings.
+    """
     from algotom.io import loadersaver as losa
+
+    from history_store import before_cache_key, save_history_entry
 
     scan_dir, log_path, meta, proj_paths, height, width = _prepare_scan(scan_dir, progress)
     mid = height // 2
@@ -532,61 +547,83 @@ def run_preview(
 
     out = Path(out_dir) if out_dir else default_output_dir(scan_dir, settings.output_dir, True)
     qc = out / "qc"
-    if qc.exists():
-        shutil.rmtree(qc)
     qc.mkdir(parents=True, exist_ok=True)
 
     recon_type = (settings.recon_type or "FBP").upper()
-    _log(f"Preview mode={recon_type}  row={row}/{height - 1}", progress)
+    rings_on = bool(settings.ring_enable) and settings.ring_method != "none"
+    _log(f"Preview mode={recon_type}  row={row}/{height - 1}  rings={'ON' if rings_on else 'OFF'}", progress)
+
+    before_reused = False
+    projections = None
+    sino = None
 
     if recon_type == "FDK":
-        _log("FDK preview loads the full projection stack (slower than FBP preview)...", progress)
+        _log("FDK preview loads the full projection stack...", progress)
         projections = load_stack(proj_paths, progress)
         n_angles = projections.shape[0]
         thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
         base_c, shift_c, center = resolve_center(projections[:, mid, :], settings, width)
-        _log(
-            f"COR base={base_c:.3f}  pixel_shift={shift_c:.3f}  effective={center:.3f}",
-            progress,
+        key = before_cache_key(
+            str(scan_dir), row, center, recon_type, "FDK_CUDA", settings.apply_log, settings.filter_name
         )
+        _log(f"COR base={base_c:.3f}  shift={shift_c:+.3f}  effective={center:.3f}", progress)
 
-        raw_prep = prepare_projections_for_fdk(
-            projections, center, settings, apply_rings=False, progress=progress
-        )
-        vol_raw = reconstruct_fdk_volume(raw_prep, thetas, meta, settings, progress)
-        img_raw = extract_fdk_slice(vol_raw, row)
+        if cached_before is not None and cached_before_key == key:
+            img_raw = np.asarray(cached_before, dtype=np.float32)
+            before_reused = True
+            _log("Reusing cached BEFORE (skipped duplicate FDK)", progress)
+        else:
+            raw_prep = prepare_projections_for_fdk(
+                projections, center, settings, apply_rings=False, progress=progress
+            )
+            vol_raw = reconstruct_fdk_volume(raw_prep, thetas, meta, settings, progress)
+            img_raw = extract_fdk_slice(vol_raw, row)
 
-        corr_prep = prepare_projections_for_fdk(
-            projections, center, settings, apply_rings=True, progress=progress
-        )
-        vol_corr = reconstruct_fdk_volume(corr_prep, thetas, meta, settings, progress)
-        img_corr = extract_fdk_slice(vol_corr, row)
+        if rings_on:
+            corr_prep = prepare_projections_for_fdk(
+                projections, center, settings, apply_rings=True, progress=progress
+            )
+            vol_corr = reconstruct_fdk_volume(corr_prep, thetas, meta, settings, progress)
+            img_corr = extract_fdk_slice(vol_corr, row)
+        else:
+            img_corr = img_raw
+            _log("Rings OFF — single reconstruction only", progress)
     else:
         sino = load_sinogram_row(proj_paths, row, progress)
         n_angles = sino.shape[0]
         thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
         base_c, shift_c, center = resolve_center(sino, settings, width)
-        _log(
-            f"COR base={base_c:.3f}  pixel_shift={shift_c:.3f}  effective={center:.3f}",
-            progress,
+        key = before_cache_key(
+            str(scan_dir), row, center, recon_type, settings.method, settings.apply_log, settings.filter_name
         )
+        _log(f"COR base={base_c:.3f}  shift={shift_c:+.3f}  effective={center:.3f}", progress)
 
-        img_raw = reconstruct_sinogram(sino.copy(), center, thetas, settings)
-        try:
-            sino_corr = apply_ring_removal(sino.copy(), settings)
-        except Exception as exc:
-            _log(f"Ring removal failed: {exc}", progress)
-            sino_corr = sino
-        img_corr = reconstruct_sinogram(sino_corr, center, thetas, settings)
+        if cached_before is not None and cached_before_key == key:
+            img_raw = np.asarray(cached_before, dtype=np.float32)
+            before_reused = True
+            _log("Reusing cached BEFORE (skipped duplicate FBP)", progress)
+        else:
+            img_raw = reconstruct_sinogram(sino.copy(), center, thetas, settings)
+
+        if rings_on:
+            try:
+                sino_corr = apply_ring_removal(sino.copy(), settings)
+            except Exception as exc:
+                _log(f"Ring removal failed: {exc}", progress)
+                sino_corr = sino
+            img_corr = reconstruct_sinogram(sino_corr, center, thetas, settings)
+        else:
+            img_corr = img_raw
+            _log("Rings OFF — single reconstruction only", progress)
 
     losa.save_image(str(qc / "preview_raw.tif"), img_raw)
     losa.save_image(str(qc / "preview_corrected.tif"), img_corr)
     if settings.save_preview:
-        save_qc_png(qc / "before.png", img_raw, f"BEFORE rings  {recon_type} row={row}")
+        save_qc_png(qc / "before.png", img_raw, f"BEFORE  {recon_type} row={row}")
         save_qc_png(
             qc / "after.png",
             img_corr,
-            f"AFTER rings  {recon_type} row={row}  c={center:.2f}  shift={shift_c:+.2f}",
+            f"AFTER  {recon_type} row={row}  c={center:.2f}  shift={shift_c:+.2f}",
         )
 
     used = deepcopy(settings)
@@ -597,6 +634,7 @@ def run_preview(
         "mode": "preview",
         "recon_type": recon_type,
         "preview_row": row,
+        "before_reused": before_reused,
         "scan_dir": str(scan_dir),
         "log_file": str(log_path),
         "n_projections": n_angles,
@@ -605,14 +643,20 @@ def run_preview(
         "pixel_shift": shift_c,
         "center": center,
         "config": used.to_config_dict(),
-        "meta_summary": meta.to_dict(),
     }
-    run_info["meta_summary"].pop("raw", None)
     save_yaml(out / "run_config.yaml", run_info)
+
+    hist = save_history_entry(
+        scan_dir,
+        kind="preview",
+        settings_dict=used.to_config_dict(),
+        images={"before": img_raw, "after": img_corr},
+        extra=f"before_reused={before_reused}  row={row}",
+    )
 
     msg = (
         f"Preview OK ({recon_type}). base={base_c:.3f} shift={shift_c:+.3f} "
-        f"effective={center:.3f}. Saved under {out}"
+        f"effective={center:.3f}. before_reused={before_reused}. history={hist.name}"
     )
     _log(msg, progress)
     return PreviewResult(
@@ -631,6 +675,9 @@ def run_preview(
         settings=used,
         meta=meta,
         message=msg,
+        before_reused=before_reused,
+        history_dir=hist,
+        before_key=key,
     )
 
 
@@ -812,6 +859,7 @@ def quick_align_preview(
     cache: AlignCache,
     pixel_shift: float,
     apply_log: bool = True,
+    save_history: bool = True,
 ) -> Tuple[np.ndarray, str, float, float]:
     """Fast FBP preview from cached sinogram (no rings, no disk)."""
     shift = float(pixel_shift or 0.0)
@@ -825,13 +873,24 @@ def quick_align_preview(
         ring_method="none",
         center_mode="manual",
         center=center,
-        pixel_shift=0.0,
+        pixel_shift=shift,
     )
     try:
         img = reconstruct_sinogram(np.asarray(cache.sino, dtype=np.float32).copy(), center, cache.thetas, settings)
     except Exception:
         settings.method = "FBP"
         img = reconstruct_sinogram(np.asarray(cache.sino, dtype=np.float32).copy(), center, cache.thetas, settings)
+
+    if save_history:
+        from history_store import save_history_entry
+
+        save_history_entry(
+            Path(cache.scan_dir),
+            kind="align",
+            settings_dict=settings.to_config_dict(),
+            images={"align": img},
+            extra=f"row={cache.row}  base={cache.base_center:.3f}",
+        )
 
     msg = (
         f"QUICK ALIGN | base={cache.base_center:.3f}  shift={shift:+.3f}  "
@@ -890,8 +949,28 @@ def auto_tune_pixel_shift(
             _log(f"  trial {i + 1}/{len(candidates)} shift={shift:+.2f} score={score:.4g}", progress)
 
     if best_img is None:
-        best_img, msg, base, eff = quick_align_preview(cache, best_shift, apply_log=apply_log)
+        best_img, msg, base, eff = quick_align_preview(
+            cache, best_shift, apply_log=apply_log, save_history=True
+        )
     else:
+        from history_store import save_history_entry
+
+        settings = Settings(
+            recon_type="FBP",
+            method="FBP_CUDA",
+            apply_log=apply_log,
+            ring_enable=False,
+            center_mode="manual",
+            center=cache.base_center + best_shift,
+            pixel_shift=best_shift,
+        )
+        save_history_entry(
+            Path(cache.scan_dir),
+            kind="align_autotune",
+            settings_dict=settings.to_config_dict(),
+            images={"align": best_img},
+            extra=f"score={best_score:.4g}  row={cache.row}",
+        )
         msg = (
             f"QUICK ALIGN | base={cache.base_center:.3f}  shift={best_shift:+.3f}  "
             f"effective={cache.base_center + best_shift:.3f}  row={cache.row}"

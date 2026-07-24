@@ -30,6 +30,7 @@ from recon_core import (  # noqa: E402
     run_preview,
     save_yaml,
 )
+from history_store import list_history_gallery  # noqa: E402
 
 PRESET_DIR = ROOT / "config" / "presets"
 DEFAULT_CFG = ROOT / "config" / "default.yaml"
@@ -129,7 +130,8 @@ def on_load_and_cache(scan_dir: str, preview_row: float):
     """Load folder, pull NRecon postalignment, cache mid-row for fast alignment."""
     scan_dir = (scan_dir or "").strip().strip('"')
     if not scan_dir:
-        return "Enter a scan folder path.", 0, 0, -1, 0.0, None, None, "No folder yet.", 0.0, 0.0
+        empty = []
+        return "Enter a scan folder path.", 0, 0, -1, 0.0, None, None, "No folder yet.", 0.0, 0.0, empty
     logs: List[str] = []
 
     def progress(msg: str) -> None:
@@ -139,38 +141,41 @@ def on_load_and_cache(scan_dir: str, preview_row: float):
         text, height, width, mid, post = probe_scan_info(scan_dir)
         row = mid if int(preview_row) < 0 else int(preview_row)
         cache = prepare_align_cache(Path(scan_dir), preview_row=row, progress=progress)
-        # Prefer log postalignment as starting shift (your Poseidon logs use this)
         start_shift = float(cache.log_postalignment or post or 0.0)
-        img, msg, base, eff = quick_align_preview(cache, start_shift, apply_log=True)
+        img, msg, base, eff = quick_align_preview(cache, start_shift, apply_log=True, save_history=True)
         status = (
             f"{text}\n"
-            f"Align cache ready (one-time load). Starting shift={start_shift:+.3f} from log.\n"
+            f"Align cache ready. Starting shift={start_shift:+.3f} from log.\n"
             f"{msg}\n" + "\n".join(logs[-6:])
         )
-        return text, height, width, row, start_shift, cache, img, status, base, eff
+        gallery = list_history_gallery(Path(scan_dir))
+        return text, height, width, row, start_shift, cache, img, status, base, eff, gallery
     except Exception as exc:
-        return f"ERROR: {exc}", 0, 0, -1, 0.0, None, None, f"LOAD FAILED: {exc}", 0.0, 0.0
+        return f"ERROR: {exc}", 0, 0, -1, 0.0, None, None, f"LOAD FAILED: {exc}", 0.0, 0.0, []
 
 
 def on_quick_align(cache: Optional[AlignCache], pixel_shift: float, apply_log: bool):
     if cache is None:
-        return None, "Click Load folder first (builds align cache).", 0.0, 0.0, float(pixel_shift or 0.0)
+        return None, "Click Load folder first (builds align cache).", 0.0, 0.0, float(pixel_shift or 0.0), []
     try:
-        img, msg, base, eff = quick_align_preview(cache, float(pixel_shift or 0.0), apply_log=bool(apply_log))
-        return img, msg, base, eff, float(pixel_shift or 0.0)
+        img, msg, base, eff = quick_align_preview(
+            cache, float(pixel_shift or 0.0), apply_log=bool(apply_log), save_history=True
+        )
+        gallery = list_history_gallery(Path(cache.scan_dir))
+        return img, msg, base, eff, float(pixel_shift or 0.0), gallery
     except Exception as exc:
-        return None, f"QUICK ALIGN FAILED: {exc}", 0.0, 0.0, float(pixel_shift or 0.0)
+        return None, f"QUICK ALIGN FAILED: {exc}", 0.0, 0.0, float(pixel_shift or 0.0), []
 
 
 def on_nudge(cache, pixel_shift, apply_log, delta):
     new_shift = _nudge(pixel_shift, delta)
-    img, msg, base, eff, _ = on_quick_align(cache, new_shift, apply_log)
-    return new_shift, new_shift, img, msg, base, eff
+    img, msg, base, eff, _, gallery = on_quick_align(cache, new_shift, apply_log)
+    return new_shift, new_shift, img, msg, base, eff, gallery
 
 
 def on_auto_tune(cache: Optional[AlignCache], apply_log: bool):
     if cache is None:
-        return 0.0, 0.0, None, "Click Load folder first."
+        return 0.0, 0.0, None, "Click Load folder first.", 0.0, 0.0, []
     logs: List[str] = []
 
     def progress(msg: str) -> None:
@@ -180,17 +185,13 @@ def on_auto_tune(cache: Optional[AlignCache], apply_log: bool):
         best, img, msg, base, eff = auto_tune_pixel_shift(
             cache, search=2.0, step=0.25, apply_log=bool(apply_log), progress=progress
         )
-        return best, best, img, msg + "\n" + "\n".join(logs[-8:]), base, eff
+        gallery = list_history_gallery(Path(cache.scan_dir))
+        return best, best, img, msg + "\n" + "\n".join(logs[-8:]), base, eff, gallery
     except Exception as exc:
-        return 0.0, 0.0, None, f"AUTO-TUNE FAILED: {exc}", 0.0, 0.0
+        return 0.0, 0.0, None, f"AUTO-TUNE FAILED: {exc}", 0.0, 0.0, []
 
 
-def on_apply_preset(name: str):
-    s = _load_preset(name)
-    return (*ui_settings_tuple(s), f"Loaded preset: {name}")
-
-
-def on_full_preview(scan_dir: str, *ctrl):
+def on_full_preview(scan_dir: str, before_cache, before_key, *ctrl):
     scan_dir = (scan_dir or "").strip().strip('"')
     logs: List[str] = []
 
@@ -199,16 +200,30 @@ def on_full_preview(scan_dir: str, *ctrl):
 
     try:
         settings = _settings_from_ui(*ctrl)
-        result = run_preview(Path(scan_dir), settings, progress=progress)
+        result = run_preview(
+            Path(scan_dir),
+            settings,
+            progress=progress,
+            cached_before=before_cache,
+            cached_before_key=before_key or "",
+        )
         status = (
             f"{result.message}\n"
             f"base={result.base_center:.3f} shift={result.pixel_shift:+.3f} "
-            f"eff={result.center:.3f} | {settings.recon_type}\n"
+            f"eff={result.center:.3f} | reused_before={result.before_reused}\n"
             + "\n".join(logs[-8:])
         )
-        return result.display_raw, result.display_corr, status
+        gallery = list_history_gallery(Path(scan_dir))
+        return (
+            result.display_raw,
+            result.display_corr,
+            status,
+            result.img_raw,  # float cache for next time
+            result.before_key,
+            gallery,
+        )
     except Exception as exc:
-        return None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:])
+        return None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:]), before_cache, before_key, []
 
 
 def on_full(scan_dir: str, *ctrl):
@@ -239,6 +254,18 @@ def on_save_recipe(recipe_name: str, *ctrl):
     return f"Saved recipe: {out}", gr.update(choices=_preset_choices())
 
 
+def on_apply_preset(name: str):
+    s = _load_preset(name)
+    return (*ui_settings_tuple(s), f"Loaded preset: {name}")
+
+
+def on_refresh_history(scan_dir: str):
+    scan_dir = (scan_dir or "").strip().strip('"')
+    if not scan_dir:
+        return []
+    return list_history_gallery(Path(scan_dir))
+
+
 def build_app():
     import gradio as gr
 
@@ -247,11 +274,13 @@ def build_app():
     with gr.Blocks(title="Bruker CT Algotom Toolkit") as demo:
         gr.Markdown(
             "# Bruker CT Algotom Toolkit\n"
-            "**Fast path:** Load folder → (auto-fills NRecon postalignment) → nudge / Auto-tune → done.  \n"
-            "Then tune rings with Full Preview, then Full reconstruction."
+            "**Fast path:** Load → align (cached) → Full Preview (reuses BEFORE when only rings change).  \n"
+            "Every run is saved to `<scan>_algotom_history` with settings under each image."
         )
 
         align_cache = gr.State(None)
+        before_cache = gr.State(None)
+        before_key = gr.State("")
 
         with gr.Row():
             scan_dir = gr.Textbox(
@@ -264,11 +293,12 @@ def build_app():
         scan_info = gr.Textbox(label="Scan info", interactive=False)
         height_state = gr.Number(value=0, visible=False)
         width_state = gr.Number(value=0, visible=False)
+        preview_row = gr.Number(value=-1, label="Preview / align row (-1=mid)", precision=0)
 
         with gr.Accordion("2) Pixel alignment (aim: ~30 seconds)", open=True):
             gr.Markdown(
-                "Loads the mid-row **once**, then every nudge is a fast FBP (no rings, no full stack).  \n"
-                "Starts from **NRecon Postalignment** in the `.log` when present."
+                "Loads mid-row **once**, then nudges are fast FBP (no rings).  \n"
+                "Starts from **NRecon Postalignment** in the `.log`."
             )
             apply_log_align = gr.Checkbox(value=True, label="Apply log for align preview")
             pixel_shift = gr.Slider(-5.0, 5.0, value=0.0, step=0.05, label="Pixel shift / postalignment (px)")
@@ -286,9 +316,13 @@ def build_app():
                 base_center_out = gr.Number(0, label="Base COR", interactive=False)
                 effective_center_out = gr.Number(0, label="Effective COR", interactive=False)
             align_img = gr.Image(label="Quick align preview (FBP, no rings)", type="numpy")
-            align_status = gr.Textbox(label="Align status", lines=6)
+            align_status = gr.Textbox(label="Align status", lines=5)
 
-        with gr.Accordion("3) Rings + full preview / reconstruct", open=False):
+        with gr.Accordion("3) Rings + full preview / reconstruct", open=True):
+            gr.Markdown(
+                "Full Preview builds **BEFORE once**, then reuses it while you only change ring settings.  \n"
+                "Status will say `reused_before=True` when the expensive before-recon was skipped."
+            )
             with gr.Row():
                 preset = gr.Dropdown(choices=_preset_choices(), value="default", label="Preset")
                 btn_preset = gr.Button("Apply preset")
@@ -312,7 +346,6 @@ def build_app():
             chunk_size = gr.Slider(1, 128, value=defaults.chunk_size, step=1, label="Chunk size")
             center_mode = gr.Radio(choices=["auto", "manual"], value="auto", label="Base COR mode")
             center_value = gr.Number(value=0.0, label="Manual base COR", precision=3)
-            preview_row = gr.Number(value=-1, label="Preview row (-1=mid)", precision=0)
             output_dir = gr.Textbox(value="", label="Output folder override")
 
             controls = [
@@ -322,12 +355,25 @@ def build_app():
             ]
 
             with gr.Row():
-                btn_preview = gr.Button("Full Preview (rings + chosen algorithm)")
+                btn_preview = gr.Button("Full Preview (rings + algorithm)", variant="primary")
                 btn_full = gr.Button("Run full reconstruction", variant="stop")
             with gr.Row():
                 img_before = gr.Image(label="BEFORE rings", type="numpy")
                 img_after = gr.Image(label="AFTER rings", type="numpy")
-            status = gr.Textbox(label="Full preview / recon log", lines=10)
+            status = gr.Textbox(label="Full preview / recon log", lines=8)
+
+        with gr.Accordion("4) History (compare past runs — settings under each image)", open=True):
+            gr.Markdown(
+                "Saved under `<scan>_algotom_history/`. Caption shows shift, rings, algorithm."
+            )
+            btn_hist = gr.Button("Refresh history")
+            history_gallery = gr.Gallery(
+                label="Reconstruction history",
+                columns=3,
+                height=480,
+                object_fit="contain",
+                preview=True,
+            )
 
         # --- wiring ---
         pixel_shift.release(lambda v: float(v), inputs=pixel_shift, outputs=pixel_shift_num)
@@ -339,55 +385,47 @@ def build_app():
             outputs=[
                 scan_info, height_state, width_state, preview_row, pixel_shift,
                 align_cache, align_img, align_status, base_center_out, effective_center_out,
+                history_gallery,
             ],
         ).then(lambda v: float(v or 0.0), inputs=pixel_shift, outputs=pixel_shift_num)
 
         btn_quick.click(
             on_quick_align,
             inputs=[align_cache, pixel_shift, apply_log_align],
-            outputs=[align_img, align_status, base_center_out, effective_center_out, pixel_shift_num],
+            outputs=[align_img, align_status, base_center_out, effective_center_out, pixel_shift_num, history_gallery],
         )
-        btn_m05.click(
-            lambda c, s, a: on_nudge(c, s, a, -0.5),
-            inputs=[align_cache, pixel_shift, apply_log_align],
-            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
-        )
-        btn_m01.click(
-            lambda c, s, a: on_nudge(c, s, a, -0.1),
-            inputs=[align_cache, pixel_shift, apply_log_align],
-            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
-        )
-        btn_p01.click(
-            lambda c, s, a: on_nudge(c, s, a, 0.1),
-            inputs=[align_cache, pixel_shift, apply_log_align],
-            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
-        )
-        btn_p05.click(
-            lambda c, s, a: on_nudge(c, s, a, 0.5),
-            inputs=[align_cache, pixel_shift, apply_log_align],
-            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
-        )
+        for btn, delta in ((btn_m05, -0.5), (btn_m01, -0.1), (btn_p01, 0.1), (btn_p05, 0.5)):
+            btn.click(
+                lambda c, s, a, d=delta: on_nudge(c, s, a, d),
+                inputs=[align_cache, pixel_shift, apply_log_align],
+                outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out, history_gallery],
+            )
         btn_auto.click(
             on_auto_tune,
             inputs=[align_cache, apply_log_align],
-            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
+            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out, history_gallery],
         )
 
         def _reset_shift(cache: Optional[AlignCache]):
             val = float(cache.log_postalignment) if cache is not None else 0.0
-            img, msg, base, eff, _ = on_quick_align(cache, val, True)
-            return val, val, img, msg, base, eff
+            img, msg, base, eff, _, gallery = on_quick_align(cache, val, True)
+            return val, val, img, msg, base, eff, gallery
 
         btn_reset.click(
             _reset_shift,
             inputs=[align_cache],
-            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out],
+            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out, history_gallery],
         )
 
         btn_preset.click(on_apply_preset, inputs=[preset], outputs=[*controls, status])
-        btn_preview.click(on_full_preview, inputs=[scan_dir, *controls], outputs=[img_before, img_after, status])
+        btn_preview.click(
+            on_full_preview,
+            inputs=[scan_dir, before_cache, before_key, *controls],
+            outputs=[img_before, img_after, status, before_cache, before_key, history_gallery],
+        )
         btn_full.click(on_full, inputs=[scan_dir, *controls], outputs=[status])
         btn_save.click(on_save_recipe, inputs=[recipe_name, *controls], outputs=[status, preset])
+        btn_hist.click(on_refresh_history, inputs=[scan_dir], outputs=[history_gallery])
 
     return demo
 
