@@ -33,13 +33,11 @@ VIEWER_HEAD = """
 }
 .ct-tip:focus { outline: 2px solid #0f766e; outline-offset: 2px; }
 .ct-tip-bubble {
-  /* Hidden in-place; JS shows a fixed float so parents cannot clip it */
-  display: none !important;
-}
-.ct-tip-float {
   display: none;
-  position: fixed;
-  z-index: 2147483646 !important;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
   min-width: 14rem;
   max-width: 22rem;
   padding: 0.55rem 0.7rem;
@@ -50,12 +48,12 @@ VIEWER_HEAD = """
   font-weight: 400;
   line-height: 1.35;
   text-align: left;
+  z-index: 2147483647;
   box-shadow: 0 12px 32px rgba(20,32,51,0.45);
   pointer-events: none;
   white-space: normal;
-  transform: translate(-50%, -100%);
 }
-.ct-tip-float::after {
+.ct-tip-bubble::after {
   content: "";
   position: absolute;
   top: 100%;
@@ -64,6 +62,18 @@ VIEWER_HEAD = """
   border: 6px solid transparent;
   border-top-color: #142033;
 }
+.ct-tip:hover .ct-tip-bubble,
+.ct-tip:focus .ct-tip-bubble,
+.ct-tip:focus-within .ct-tip-bubble { display: block; }
+/* Keep tips above Gradio panels / tabs */
+.gradio-container .ct-tip { z-index: 50; }
+.gradio-container .tabs,
+.gradio-container .tabitem,
+.gradio-container .panel,
+.gradio-container .form,
+.gradio-container .block,
+.ct-panel,
+.ct-help { overflow: visible !important; }
 
 .ct-readout-wrap { margin: 0.55rem 0 0.65rem; }
 .ct-readout-title {
@@ -174,42 +184,6 @@ VIEWER_HEAD = """
 </style>
 <script>
 (function () {
-  /* ---- floating tooltips (escape Gradio overflow clipping) ---- */
-  var floatEl = null;
-  function getFloat() {
-    if (!floatEl) {
-      floatEl = document.createElement("div");
-      floatEl.className = "ct-tip-float";
-      document.body.appendChild(floatEl);
-    }
-    return floatEl;
-  }
-  function placeTip(tip) {
-    var bubble = tip.querySelector(".ct-tip-bubble");
-    if (!bubble) return;
-    var f = getFloat();
-    f.textContent = bubble.textContent || "";
-    f.style.display = "block";
-    var r = tip.getBoundingClientRect();
-    f.style.left = (r.left + r.width / 2) + "px";
-    f.style.top = Math.max(8, r.top - 10) + "px";
-  }
-  function hideTip() {
-    if (floatEl) floatEl.style.display = "none";
-  }
-  document.addEventListener("mouseover", function (e) {
-    var tip = e.target && e.target.closest ? e.target.closest(".ct-tip") : null;
-    if (tip) placeTip(tip);
-  }, true);
-  document.addEventListener("mouseout", function (e) {
-    var tip = e.target && e.target.closest ? e.target.closest(".ct-tip") : null;
-    if (!tip) return;
-    var to = e.relatedTarget;
-    if (to && tip.contains(to)) return;
-    hideTip();
-  }, true);
-  document.addEventListener("scroll", hideTip, true);
-
   /* ---- zoom / pan viewer ---- */
   const MIN = 1, MAX = 8, STEP = 0.35;
 

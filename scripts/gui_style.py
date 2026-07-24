@@ -136,12 +136,11 @@ footer { display: none !important; }
 }
 .ct-tip:focus { outline: 2px solid #0f766e; outline-offset: 2px; }
 .ct-tip-bubble {
-  display: none !important;
-}
-.ct-tip-float {
   display: none;
-  position: fixed;
-  z-index: 2147483646 !important;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
   min-width: 14rem;
   max-width: 22rem;
   padding: 0.55rem 0.7rem;
@@ -152,11 +151,31 @@ footer { display: none !important; }
   font-weight: 400;
   line-height: 1.35;
   text-align: left;
+  z-index: 2147483647;
   box-shadow: 0 12px 32px rgba(20,32,51,0.45);
   pointer-events: none;
   white-space: normal;
-  transform: translate(-50%, -100%);
 }
+.ct-tip-bubble::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: #142033;
+}
+.ct-tip:hover .ct-tip-bubble,
+.ct-tip:focus .ct-tip-bubble,
+.ct-tip:focus-within .ct-tip-bubble { display: block; }
+.gradio-container .ct-tip { z-index: 50; }
+.gradio-container .tabs,
+.gradio-container .tabitem,
+.gradio-container .panel,
+.gradio-container .form,
+.gradio-container .block,
+.ct-panel,
+.ct-help { overflow: visible !important; }
 .ct-scan-actions {
   display: flex !important;
   flex-direction: column !important;

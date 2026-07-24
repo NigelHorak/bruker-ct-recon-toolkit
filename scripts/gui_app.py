@@ -970,20 +970,19 @@ def build_app():
                         btn_use_bh = gr.Button("Use this BH", variant="secondary")
 
                     with gr.Tab("Nomar"):
-                        gr.HTML(
-                            "<div class='ct-help'>🍆💦🍑 sacred Nomar rituals "
-                            "(does absolutely nothing scientific) 🍆💦🍑</div>"
-                        )
+                        gr.HTML("<div class='ct-help'>sacred Nomar rituals</div>")
                         gooner = gr.Slider(0, 100, value=69, step=1, label="Gooner intensity")
                         rizz = gr.Slider(0, 10, value=0.5, step=0.1, label="Rizz coefficient")
                         chud = gr.Slider(-5, 5, value=0, step=0.25, label="Chud alignment")
+                        skibidi = gr.Slider(0, 100, value=12, step=1, label="Skibidi torque")
+                        mewing = gr.Checkbox(value=True, label="Mewing locked")
                         alpha = gr.Radio(
-                            choices=["Sigma", "Alpha", "Beta", "Ohio"],
+                            choices=["Sigma", "Alpha", "Beta", "Ohio", "Gyatt"],
                             value="Sigma",
                             label="Aura class",
                         )
-                        btn_nomar = gr.Button("Deploy aura 🔥", variant="primary")
-                        nomar_out = gr.Textbox(label="Nomar oracle", lines=3, interactive=False)
+                        btn_nomar = gr.Button("Deploy aura", variant="primary")
+                        nomar_out = gr.Textbox(label="Nomar oracle", lines=6, interactive=False)
 
                     with gr.Tab("Run"):
                         gr.HTML(_help("Fast for tuning; Careful 3D for the final volume.", "speed"))
@@ -1168,16 +1167,19 @@ def build_app():
             outputs=[bh_enable, bh_q, bh_n, status],
         )
 
-        def _nomar(g, r, c, a):
-            vibes = [
-                f"Gooner={g:.0f} Rizz={r:.1f} Chud={c:+.2f} class={a}",
-                "Nomar says: touch grass (but make it microscopic).",
-                "Aura deployed. Science unchanged. Ego +1.",
-                "egg plant water peach protocol: acknowledged.",
-            ]
-            return "\n".join(vibes)
+        def _nomar(g, r, c, s, m, a):
+            mew = "LOCKED" if m else "unlocked (cringe)"
+            return (
+                "🍆💦🍑🔥💀🗣️\n"
+                f"Gooner={g:.0f}  Rizz={r:.1f}  Chud={c:+.2f}  Skibidi={s:.0f}\n"
+                f"Mewing={mew}  Aura class={a}\n"
+                "Nomar says: touch grass (but make it microscopic).\n"
+                "Aura deployed. Science unchanged. Ego +1.\n"
+                "Fanum tax applied to your sinogram. Mid.\n"
+                "Only in Ohio does this reconstruct clean rings."
+            )
 
-        btn_nomar.click(_nomar, inputs=[gooner, rizz, chud, alpha], outputs=[nomar_out])
+        btn_nomar.click(_nomar, inputs=[gooner, rizz, chud, skibidi, mewing, alpha], outputs=[nomar_out])
 
         recon_slider.change(on_recon_index, inputs=[recon_slider, recon_stack, pixel_um], outputs=nav_outs)
         btn_recon_prev.click(on_recon_prev, inputs=[recon_idx, recon_stack, pixel_um], outputs=nav_outs)

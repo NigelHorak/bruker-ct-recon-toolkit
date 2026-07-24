@@ -72,11 +72,15 @@ Inside the **scan folder**:
 ### GUI (`scripts/gui_app.py` + `gui_style.py` + `gui_labels.py` + `viewer_html.py`)
 - Full-width layout; controls left (**Align | Rings | Beam hardening | Run**), **Reconstruction** viewer right  
 - Custom zoom/pan viewer (scroll/drag/double-click) with scale bar from Bruker `Image Pixel Size (um)`  
-- Teal **i** hover tips (CSS bubble, not Gradio `info=`)  
-- Align: Single value or Range (default −10…10 step 5); nudges are optional ±0.5/±1 polish  
+- Empty dark square for Reconstruction until an image exists (no upload / drop chrome)  
+- Teal **i** hover tips (CSS bubble, high z-index, panels `overflow: visible`)  
+- Scan row: folder + narrow Slice number + Middle; **Browse…** with **Load scan** stacked under it  
+- Align: Single value or Range (default −10…10 step 5); **Current shifts** readouts; nudges optional ±0.5/±1  
 - Rings: Try recipes or Strength range (Algotom SNR); fine knobs are Algotom stripe params  
-- Browse… / focus Scan folder opens a **folder** picker (tkinter)  
-- Silent preview cache under `algotom/previews/`  
+- Beam hardening: real Algotom `beam_hardening_correction` (q / n), Single or Range, then Use  
+- Run: Preview / full volume to default `algotom/` paths; **Show in folder** after full recon  
+- Silent preview cache under `algotom/previews/` (log-only on hit)  
+- Folder picker via Browse… (tkinter)  
 
 ### QC / lab helpers
 - `qc_metrics.py` — ring score + sharpness + difference image  
@@ -127,7 +131,7 @@ Open / known gaps:
 - Flat field OFF on real scan — no flats/darks pipeline yet  
 - Postalignment sign may need empiric check vs NRecon  
 - FDK preview loads full stack (RAM/GPU heavy)  
-- True drag-pan/zoom viewer still limited (browser zoom / Gradio image)  
+- True drag-pan/zoom viewer: custom HTML in `viewer_html.py` (scroll / drag / double-click + scale bar)  
 - Sharpness/ring scores are heuristics — human eye still wins  
 
 ---
