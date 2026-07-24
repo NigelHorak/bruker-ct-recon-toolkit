@@ -92,11 +92,11 @@ def compare_pair(before: np.ndarray, after: np.ndarray) -> Dict[str, float]:
 def qc_warning(metrics: Dict[str, float]) -> str:
     notes = []
     if metrics["ring_reduction_pct"] < 5.0:
-        notes.append("rings barely reduced — try stronger preset / different method")
+        notes.append("rings barely reduced - try stronger preset / different method")
     if metrics["ring_reduction_pct"] > 40.0 and metrics["sharp_change_pct"] < -15.0:
         notes.append("possible overcorrection (rings down but sharpness dropped)")
     if metrics["ring_after"] > metrics["ring_before"] * 1.05:
-        notes.append("AFTER looks ringier than BEFORE — check method / params")
+        notes.append("AFTER looks ringier than BEFORE - check method / params")
     return "; ".join(notes) if notes else "OK"
 
 
