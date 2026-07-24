@@ -37,7 +37,7 @@ Validated early against Nigel’s Poseidon log `BCO2-TP-01.log` (721 projs, 2400
 | ~22:08–22:20 | Logging overhaul (`toolkit_gui.log`, Activity log); Gradio blocked `D:\Results\…` history paths → in-memory gallery + `allowed_paths` |
 | ~22:32–23:00 | Partner/Nigel feedback: nudge layout, ±5 crash, jargon, full-width, single viewer, plain names |
 | ~23:00 | Full UI rebuild: Align / Rings / Run, Fast vs Careful 3D, `scan/algotom/` outputs, history restore |
-| ~23:06+ | Handoff doc; Auto-find then short ring bake-off; silent single-image load for UI testing |
+| ~23:06+ | Handoff doc; Auto-find then short ring bake-off |
 
 Exact commit SHAs live in `git log` on `master` (e.g. history cache, port reclaim, QC features, Gradio path fix, UI rebuild).
 
