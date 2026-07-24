@@ -431,8 +431,32 @@ def build_app():
 
 
 def main() -> None:
+    import socket
+
+    def port_free(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+                return True
+            except OSError:
+                return False
+
+    port = next((p for p in range(7860, 7871) if port_free(p)), None)
+    if port is None:
+        raise OSError(
+            "No free port in 7860-7870. Close old toolkit windows "
+            "(Task Manager: end python.exe), then try again."
+        )
+
+    print(f"Opening GUI at http://127.0.0.1:{port}")
     demo = build_app()
-    demo.queue().launch(server_name="127.0.0.1", server_port=7860, inbrowser=True, show_error=True)
+    demo.queue().launch(
+        server_name="127.0.0.1",
+        server_port=port,
+        inbrowser=True,
+        show_error=True,
+    )
 
 
 if __name__ == "__main__":
