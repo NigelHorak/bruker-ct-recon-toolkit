@@ -69,9 +69,31 @@ html, body {
   backdrop-filter: blur(8px);
 }
 
+.ct-i {
+  display: inline-flex;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  background: var(--ct-teal);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+  line-height: 1;
+}
+.ct-help {
+  color: var(--ct-muted);
+  font-size: 0.88rem;
+  line-height: 1.35;
+  margin: 0.15rem 0 0.65rem;
+}
 .ct-nudge {
   display: grid !important;
-  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
   gap: 0.45rem !important;
 }
 .ct-nudge > * { width: 100% !important; min-width: 0 !important; }

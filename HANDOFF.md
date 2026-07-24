@@ -211,4 +211,26 @@ notepad config\notify.yaml
 
 ---
 
+## 11. UX redesign (2026-07-23 late evening) — NRecon-style pickers
+
+Partner feedback drove a second UX pass:
+
+- **Removed** reconstruction image-filter menu (use post tools instead; recon uses fixed `hann`)
+- **Removed** duplicate “exact value” + “fine alignment” pair; shift is one hidden working value
+- **Removed** “Clean rings” checkbox (recipe list includes Off)
+- **Slice #** shows a real index; **Middle (fastest)** sets mid-slice
+- **Alignment / Rings / BH**: user sets **From / To / Step** (or fixed recipes for rings), **Generate options**, click the best thumbnail, **Use this…** to lock
+- Coarse nudges only: **±1 / ±0.5** (wired with explicit lambdas so they actually fire)
+- Hover **(i)** tips instead of long on-screen Gradio `info=` text
+- **Start Toolkit.bat** launches Python **hidden**, opens the browser, then **exits** (no sticky black console). Logs still in `toolkit_gui.log`.
+
+### How to use (intended)
+1. Load scan → set slice (or Middle)
+2. Align: e.g. From −5, To 15, Step 5 → Generate → click best → Use this alignment
+3. Rings: Generate ring options → click best → Use this ring setting
+4. Optional BH strength sweep on the current view
+5. Run → Preview → Full volume
+
+---
+
 *End of handoff. For runtime truth, prefer this file + `git log` + `toolkit_gui.log` on a failing machine.*

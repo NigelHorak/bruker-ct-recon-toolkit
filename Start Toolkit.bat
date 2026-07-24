@@ -1,5 +1,5 @@
 @echo off
-REM Launch the Bruker CT Algotom GUI (Gradio) in the algotom-gpu conda env.
+REM Launch toolkit hidden, open browser, then close this window.
 setlocal
 cd /d "%~dp0"
 
@@ -15,15 +15,11 @@ if "%CONDA_EXE%"=="" (
   exit /b 1
 )
 
-echo Starting Bruker CT Algotom Toolkit GUI...
-echo Browser: http://127.0.0.1:7860
-echo Keep this window open while you work.
-echo.
+REM Hidden console; logs still go to toolkit_gui.log from Python.
+powershell -NoProfile -WindowStyle Hidden -Command ^
+  "Start-Process -WindowStyle Hidden -FilePath '%CONDA_EXE%' -ArgumentList @('run','-n','algotom-gpu','--no-capture-output','python','%~dp0scripts\gui_app.py') -WorkingDirectory '%~dp0'"
 
-"%CONDA_EXE%" run -n algotom-gpu --no-capture-output python "%~dp0scripts\gui_app.py"
-if errorlevel 1 (
-  echo.
-  echo GUI exited with an error. If Gradio is missing, re-run setup.ps1
-  pause
-)
+timeout /t 5 /nobreak >nul
+start "" http://127.0.0.1:7860
 endlocal
+exit
