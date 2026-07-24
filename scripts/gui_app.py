@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -173,6 +175,55 @@ def on_load_and_cache(scan_dir: str, preview_row: float, view_choice: str):
         log_line("LOAD blocked: empty path")
         return "Enter a scan folder path.", -1, 0.0, None, None, None, None, None, 0.0, 0.0, None, [], [], msg
 
+    path = Path(scan_dir)
+    if path.is_file() and path.suffix.lower() in {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".bmp",
+        ".webp",
+        ".tif",
+        ".tiff",
+    }:
+        try:
+            from PIL import Image
+
+            arr = np.asarray(Image.open(path).convert("RGB"))
+            status = f"Loaded.\n{path.name}"
+            return (
+                str(path),
+                -1,
+                0.0,
+                None,
+                arr,
+                None,
+                None,
+                None,
+                0.0,
+                0.0,
+                arr,
+                [],
+                [],
+                status,
+            )
+        except Exception as exc:
+            return (
+                f"ERROR: {exc}",
+                -1,
+                0.0,
+                None,
+                None,
+                None,
+                None,
+                None,
+                0.0,
+                0.0,
+                None,
+                [],
+                [],
+                log_exception("Load scan", exc),
+            )
+
     progress = ProgressLog(f"LOAD: {scan_dir}")
     try:
         text, height, width, mid, post = probe_scan_info(scan_dir)
@@ -230,20 +281,99 @@ def on_nudge(cache, pixel_shift, apply_log, delta, view_choice, before, after, d
     return shift, shift, img, base, eff, view, gallery, entries, status
 
 
-def on_auto_tune(cache, apply_log, view_choice, before, after, diff):
+# After Auto-find best: try these ring cleaners (off + 3 recipes)
+QUICK_RING_METHODS = [
+    "none",
+    "remove_all_stripe",
+    "remove_stripe_based_sorting",
+    "remove_large_stripe",
+]
+
+
+def on_auto_tune(cache, apply_log, view_choice, before, after, diff, snr, la_size, sm_size, drop_ratio, dim):
     if cache is None:
-        return 0.0, 0.0, None, 0.0, 0.0, None, [], [], "Click Load scan first."
-    progress = ProgressLog("AUTO-TUNE: trying many shifts, picking sharpest")
+        return (
+            0.0,
+            0.0,
+            None,
+            0.0,
+            0.0,
+            None,
+            None,
+            [],
+            [],
+            [],
+            True,
+            ring_label("remove_all_stripe"),
+            "Click Load scan first.",
+        )
+    progress = ProgressLog("AUTO-FIND: trying many shifts, then a short ring bake-off")
     try:
         best, img, msg, base, eff = auto_tune_pixel_shift(
             cache, search=5.0, step=0.25, apply_log=bool(apply_log), progress=progress
         )
         best = _clamp_shift(best)
+
+        # Short ring bake-off with the new alignment
+        settings = Settings(
+            ring_enable=True,
+            ring_method="remove_all_stripe",
+            snr=float(snr),
+            la_size=int(la_size) if int(la_size) % 2 == 1 else int(la_size) + 1,
+            sm_size=int(sm_size) if int(sm_size) % 2 == 1 else int(sm_size) + 1,
+            drop_ratio=float(drop_ratio),
+            dim=int(dim),
+            recon_type="FBP",
+            method="FBP_CUDA",
+            filter_name="hann",
+            apply_log=bool(apply_log),
+            pixel_shift=best,
+            preview_row=int(cache.row),
+            center_mode="auto",
+        )
+        tiles, report, win, win_img = compare_ring_methods(
+            Path(cache.scan_dir),
+            settings,
+            progress=progress,
+            methods=list(QUICK_RING_METHODS),
+        )
         gallery, entries = _gallery_and_entries(cache.scan_dir)
-        view = _pick_view(view_choice, img, before, after, diff)
-        return best, best, img, base, eff, view, gallery, entries, f"{msg}\n{progress.text()}"
+        view = _pick_view(view_choice or "After cleanup", img, img, win_img, diff)
+        status = (
+            f"{msg}\n\nThen tried {len(QUICK_RING_METHODS)} ring cleaners:\n{report}\n"
+            f"{progress.text()}"
+        )
+        return (
+            best,
+            best,
+            img,
+            base,
+            eff,
+            view,
+            win_img,
+            tiles,
+            gallery,
+            entries,
+            win.ring_enable,
+            ring_label(win.ring_method),
+            status,
+        )
     except Exception as exc:
-        return 0.0, 0.0, None, 0.0, 0.0, None, [], [], log_exception("Auto-tune", exc)
+        return (
+            0.0,
+            0.0,
+            None,
+            0.0,
+            0.0,
+            None,
+            None,
+            [],
+            [],
+            [],
+            True,
+            ring_label("remove_all_stripe"),
+            log_exception("Auto-find best", exc),
+        )
 
 
 def on_align_check(scan_dir, pixel_shift, apply_log, view_choice, before, after, diff):
@@ -333,15 +463,11 @@ def on_ring_compare(scan_dir, view_choice, align_img, before, after, diff, *ctrl
         return [], True, ring_label("remove_all_stripe"), None, [], [], "Enter a scan folder first."
     try:
         settings = _settings_from_ui(*ctrl)
-        tiles, report, win = compare_ring_methods(Path(scan_dir), settings, progress=progress)
+        tiles, report, win, win_img = compare_ring_methods(
+            Path(scan_dir), settings, progress=progress
+        )
         gallery, entries = _gallery_and_entries(scan_dir)
-        # Show first tile / winner in main view if available
-        main = tiles[0][0] if tiles else align_img
-        for img, cap in tiles:
-            if "*" in cap or "remove_all" in cap.lower() or win.ring_method in cap:
-                main = img
-                break
-        view = _pick_view(view_choice, main, before, after, diff)
+        view = _pick_view(view_choice, win_img, before, after, diff)
         return (
             tiles,
             win.ring_enable,
@@ -706,13 +832,35 @@ def build_app():
 
         btn_auto.click(
             on_auto_tune,
-            inputs=[align_cache, apply_log_align, view_choice, before_state, after_state, diff_state],
-            outputs=[
-                pixel_shift, pixel_shift_num, align_img_state,
-                base_center_out, effective_center_out, main_img,
-                history_gallery, history_entries, status,
+            inputs=[
+                align_cache,
+                apply_log_align,
+                view_choice,
+                before_state,
+                after_state,
+                diff_state,
+                snr,
+                la_size,
+                sm_size,
+                drop_ratio,
+                dim,
             ],
-        )
+            outputs=[
+                pixel_shift,
+                pixel_shift_num,
+                align_img_state,
+                base_center_out,
+                effective_center_out,
+                main_img,
+                after_state,
+                compare_gallery,
+                history_gallery,
+                history_entries,
+                ring_enable,
+                ring_method,
+                status,
+            ],
+        ).then(lambda: "After cleanup", outputs=[view_choice])
 
         btn_align_check.click(
             on_align_check,

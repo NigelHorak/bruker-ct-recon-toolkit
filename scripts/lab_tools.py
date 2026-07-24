@@ -221,8 +221,13 @@ def compare_ring_methods(
     scan_dir: Path,
     settings: Settings,
     progress: Progress = None,
+    methods: Optional[List[str]] = None,
 ) -> Tuple[List[Tuple[np.ndarray, str]], str, Settings]:
-    """Fast FBP bake-off on one row. Returns gallery, report, winning settings."""
+    """
+    Fast FBP bake-off on one row. Returns gallery, report, winning settings.
+
+    Winner = lowest ring_score, then highest sharpness (our QC, not an Algotom API).
+    """
     scan_dir, _, meta, proj_paths, height, width = _prepare_scan(Path(scan_dir), progress)
     mid = height // 2
     row = mid if settings.preview_row is None or settings.preview_row < 0 else int(settings.preview_row)
@@ -231,7 +236,8 @@ def compare_ring_methods(
     thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, sino.shape[0]), dtype=np.float64))
     base, shift, center = resolve_center(sino, settings, width)
 
-    methods = ["none"] + [m for m in RING_METHODS if m != "none"]
+    if methods is None:
+        methods = ["none"] + [m for m in RING_METHODS if m != "none"]
     results: List[Tuple[str, float, float, np.ndarray]] = []
     for method in methods:
         s = deepcopy(settings)
@@ -264,9 +270,10 @@ def compare_ring_methods(
     winner = ranked[0][0]
     lines = [
         f"RING COMPARE row={row} center={center:.3f} shift={shift:+.3f}",
-        f"Winner (lowest ring score): {winner}",
+        f"Winner (lowest ring score, then sharpness): {winner}",
     ]
     gallery: List[Tuple[np.ndarray, str]] = []
+    winner_img = ranked[0][3]
     for method, rs, sh, img in results:
         mark = " *" if method == winner else ""
         cap = f"{method}{mark}\nring={rs:.4g}  sharp={sh:.4g}"
@@ -290,4 +297,4 @@ def compare_ring_methods(
     else:
         win_settings.ring_enable = True
         win_settings.ring_method = winner
-    return gallery, "\n".join(lines), win_settings
+    return gallery, "\n".join(lines), win_settings, _norm_display(winner_img)

@@ -42,7 +42,9 @@ SPEED_CODE_TO_LABEL: Dict[str, str] = {code: label for label, code in SPEED_UI}
 INFO = {
     "shift": "Nudge how the rotation center lines up (same idea as NRecon Postalignment). "
     "Move until edges look sharp, not double.",
-    "auto_tune": "Tries many small shifts automatically and picks the sharpest mid-slice.",
+    "auto_tune": "Tries many alignment shifts and keeps the sharpest mid-slice "
+    "(our sharpness score, not an Algotom built-in). Then quickly tries a few ring cleaners "
+    "and applies the one with the lowest ring score.",
     "multi_row": "Checks top, middle, and bottom slices agree on the same shift.",
     "ring_method": "Which ring-cleanup recipe to use. Start with All rings.",
     "snr": "How strongly a ring must stand out before it is removed. "
