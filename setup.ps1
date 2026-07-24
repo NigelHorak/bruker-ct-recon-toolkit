@@ -143,8 +143,13 @@ Write-Step "Running smoke test"
 $pythonExe = & $condaExe run -n $CondaEnvName python -c "import sys; print(sys.executable)"
 Write-Host "Python: $pythonExe"
 & $condaExe run -n $CondaEnvName --no-capture-output python (Join-Path $Root "scripts\smoke_test.py")
-if ($LASTEXITCODE -ne 0) {
-    throw "Smoke test failed (exit $LASTEXITCODE)."
+$smokeCode = $LASTEXITCODE
+if ($smokeCode -eq 0) {
+    Write-Host "Smoke test: FULL GPU OK" -ForegroundColor Green
+} elseif ($smokeCode -eq 2) {
+    Write-Host "Smoke test: PARTIAL (CPU only). GUI will open, but GPU recon needs an NVIDIA card." -ForegroundColor Yellow
+} else {
+    throw "Smoke test failed (exit $smokeCode)."
 }
 
 Write-Host ""
