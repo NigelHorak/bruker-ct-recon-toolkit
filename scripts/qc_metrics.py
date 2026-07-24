@@ -103,7 +103,7 @@ def qc_warning(metrics: Dict[str, float]) -> str:
 def format_qc_line(metrics: Dict[str, float]) -> str:
     warn = qc_warning(metrics)
     return (
-        f"QC rings {metrics['ring_before']:.4g}→{metrics['ring_after']:.4g} "
+        f"QC rings {metrics['ring_before']:.4g}->{metrics['ring_after']:.4g} "
         f"({metrics['ring_reduction_pct']:+.1f}%)  "
         f"sharp {metrics['sharp_change_pct']:+.1f}%  [{warn}]"
     )
