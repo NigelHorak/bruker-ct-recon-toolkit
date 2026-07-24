@@ -17,6 +17,7 @@ from recon_core import (
     _log,
     _norm_display,
     _sharpness_score,
+    apply_beam_hardening,
     apply_ring_removal,
     quick_align_preview,
     reconstruct_sinogram,
@@ -261,42 +262,92 @@ def sweep_ring_strength(
     return out
 
 
-def apply_simple_beam_hardening(img: np.ndarray, strength: float) -> np.ndarray:
-    """
-    Simple display/post BH-style remap (not full physics).
-    strength 0 = unchanged; higher = more correction curve.
-    """
-    x = np.asarray(img, dtype=np.float64)
-    lo, hi = np.percentile(x, (1, 99))
-    if hi <= lo:
-        return _norm_display(x)
-    n = np.clip((x - lo) / (hi - lo), 0, 1)
-    s = max(0.0, float(strength))
-    # gamma-like + soft polynomial lift of darks
-    gamma = 1.0 / (1.0 + 0.35 * s)
-    y = n**gamma
-    y = y + s * 0.08 * (y * (1.0 - y))
-    y = np.clip(y, 0, 1)
-    return (y * 255.0).astype(np.uint8)
+def apply_algotom_beam_hardening(
+    sino: np.ndarray,
+    q: float,
+    n: float = 2.0,
+    opt: bool = True,
+) -> np.ndarray:
+    s = Settings(bh_enable=True, bh_q=float(q), bh_n=float(n), bh_opt=bool(opt))
+    return apply_beam_hardening(sino, s)
 
 
 def sweep_beam_hardening(
-    base_img: np.ndarray,
-    start: float,
-    stop: float,
-    step: float,
+    cache: AlignCache,
+    pixel_shift: float,
+    q_start: float,
+    q_stop: float,
+    q_step: float,
+    bh_n: float = 2.0,
+    bh_opt: bool = True,
+    apply_log: bool = True,
     progress: ProgressCb = None,
 ) -> List[Candidate]:
-    values = _arange_inclusive(float(start), float(stop), float(step))
-    _log(f"Beam-hardening sweep: {values}", progress)
+    """Real Algotom beam_hardening_correction — sweep q, user picks."""
+    from preview_cache import (
+        format_params_log,
+        load_cached_preview,
+        preview_params_key,
+        save_cached_preview,
+    )
+
+    values = _arange_inclusive(float(q_start), float(q_stop), float(q_step))
+    shift = float(pixel_shift or 0.0)
+    center = float(cache.base_center) + shift
+    scan = Path(cache.scan_dir)
     out: List[Candidate] = []
-    for v in values:
-        img = apply_simple_beam_hardening(base_img, v)
+    _log(f"Algotom BH sweep q={values} n={bh_n}", progress)
+    for q in values:
+        params = preview_params_key(
+            scan,
+            kind="bh",
+            row=int(cache.row),
+            pixel_shift=shift,
+            ring_enable=False,
+            ring_method="none",
+            snr=0.0,
+            la_size=0,
+            sm_size=0,
+            drop_ratio=0.0,
+            dim=1,
+            apply_log=bool(apply_log),
+            bh_strength=float(q),
+            extra=f"n={bh_n},opt={int(bool(bh_opt))}",
+        )
+        hit = load_cached_preview(scan, params)
+        if hit is not None:
+            disp, _folder = hit
+            _log(f"recon already exists ({format_params_log(params)})", progress)
+        else:
+            s = Settings(
+                recon_type="FBP",
+                method="FBP_CUDA",
+                filter_name="hann",
+                apply_log=bool(apply_log),
+                ring_enable=False,
+                ring_method="none",
+                bh_enable=True,
+                bh_q=float(q),
+                bh_n=float(bh_n),
+                bh_opt=bool(bh_opt),
+                center_mode="manual",
+                center=center,
+                pixel_shift=shift,
+            )
+            work = apply_beam_hardening(np.asarray(cache.sino, dtype=np.float32).copy(), s)
+            try:
+                img = reconstruct_sinogram(work, center, cache.thetas, s)
+            except Exception:
+                s.method = "FBP"
+                img = reconstruct_sinogram(work, center, cache.thetas, s)
+            disp = _norm_display(img)
+            save_cached_preview(scan, params, disp)
+            _log(f"  q={q:.4g} saved", progress)
         out.append(
             Candidate(
-                label=f"BH strength {v:.2f}",
-                image=img,
-                payload={"bh_strength": float(v)},
+                label=f"BH q={q:.3g}\nn={bh_n:.2g}",
+                image=disp,
+                payload={"bh_q": float(q), "bh_n": float(bh_n), "bh_opt": bool(bh_opt), "bh_enable": True},
             )
         )
     return out

@@ -61,8 +61,8 @@ INFO = {
     "filter": "Reconstruction filter (Algotom/Astra). Balanced is fine for almost everything.",
     "apply_log": "Converts detector brightness into the numbers CT math expects. Leave ON unless you know otherwise.",
     "preset": "Saved recipes (YAML files in config/presets). Apply loads them; Save writes a new one.",
-    "bh": "Simple brightness curve on the finished slice (lab convenience). "
-    "Algotom also has a physics-style beam_hardening_correction on projections — we can wire that later if you want.",
+    "bh": "Algotom beam_hardening_correction on the sinogram. "
+    "q is the curve strength (try ~0.01–0.2). n must be > 1 (often ~2).",
     "folder": "Paste a path or click Browse to pick the scan folder (not a single file).",
     "slice": "Detector row to reconstruct. Middle is usually fastest and representative.",
     "viewer": "Scroll to zoom, drag to pan, double-click to zoom in. Scale bar uses Image Pixel Size from the Bruker .log.",

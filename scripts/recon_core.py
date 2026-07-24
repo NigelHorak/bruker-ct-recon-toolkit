@@ -60,6 +60,11 @@ class Settings:
     center: Optional[float] = None
     # NRecon-style postalignment: added to auto/manual base COR (can be fractional)
     pixel_shift: float = 0.0
+    # Algotom beam_hardening_correction on sinogram/projections
+    bh_enable: bool = False
+    bh_q: float = 0.05
+    bh_n: float = 2.0
+    bh_opt: bool = True
     # IO / preview
     preview_row: Optional[int] = None  # None = mid
     output_dir: str = ""
@@ -75,6 +80,12 @@ class Settings:
                 "sm_size": self.sm_size,
                 "drop_ratio": self.drop_ratio,
                 "dim": self.dim,
+            },
+            "beam_hardening": {
+                "enable": self.bh_enable,
+                "q": self.bh_q,
+                "n": self.bh_n,
+                "opt": self.bh_opt,
             },
             "recon": {
                 "recon_type": self.recon_type,
@@ -95,6 +106,7 @@ class Settings:
     @staticmethod
     def from_config_dict(cfg: Dict[str, Any]) -> "Settings":
         ring = cfg.get("ring", {}) or {}
+        bh = cfg.get("beam_hardening", {}) or {}
         recon = cfg.get("recon", {}) or {}
         io_cfg = cfg.get("io", {}) or {}
         paths = cfg.get("paths", {}) or {}
@@ -112,6 +124,10 @@ class Settings:
             sm_size=int(ring.get("sm_size", 21)),
             drop_ratio=float(ring.get("drop_ratio", 0.1)),
             dim=int(ring.get("dim", 1)),
+            bh_enable=bool(bh.get("enable", False)),
+            bh_q=float(bh.get("q", 0.05)),
+            bh_n=float(bh.get("n", 2.0)),
+            bh_opt=bool(bh.get("opt", True)),
             recon_type=recon_type,
             method=str(recon.get("method", "FBP_CUDA")),
             filter_name=str(recon.get("filter_name", "hann")),
@@ -280,6 +296,23 @@ def apply_ring_removal(sino: np.ndarray, settings: Settings) -> np.ndarray:
     raise ValueError(f"Unknown ring method: {method}")
 
 
+def apply_beam_hardening(mat: np.ndarray, settings: Settings) -> np.ndarray:
+    """Algotom beam_hardening_correction on a normalized sinogram/projection."""
+    if not settings.bh_enable:
+        return mat
+    from algotom.prep.correction import beam_hardening_correction
+
+    x = np.asarray(mat, dtype=np.float64)
+    lo, hi = np.percentile(x, (0.5, 99.5))
+    if hi <= lo:
+        hi = lo + 1e-6
+    norm = np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+    q = max(0.005, float(settings.bh_q))
+    n = max(1.01, float(settings.bh_n))
+    corr = beam_hardening_correction(norm, q, n, opt=bool(settings.bh_opt))
+    return np.asarray(corr, dtype=np.float32) * float(hi - lo) + float(lo)
+
+
 def find_center(sino: np.ndarray, settings: Settings, width: int) -> float:
     """Return effective COR = base (auto/manual) + pixel_shift."""
     _, _, effective = resolve_center(sino, settings, width)
@@ -394,6 +427,17 @@ def prepare_projections_for_fdk(
                 _log(f"Ring fail row {r}: {exc}", progress)
             if r % 100 == 0 or r == n_rows - 1:
                 _log(f"  ring rows {r + 1}/{n_rows}", progress)
+
+    if settings.bh_enable:
+        _log(f"Algotom beam hardening on FDK stack q={settings.bh_q} n={settings.bh_n}", progress)
+        n_rows = data.shape[1]
+        for r in range(n_rows):
+            try:
+                data[:, r, :] = apply_beam_hardening(data[:, r, :], settings)
+            except Exception as exc:
+                _log(f"BH fail row {r}: {exc}", progress)
+            if r % 100 == 0 or r == n_rows - 1:
+                _log(f"  BH rows {r + 1}/{n_rows}", progress)
     return data
 
 
@@ -654,6 +698,9 @@ def run_preview(
             _log("Rings OFF — single reconstruction only", progress)
     else:
         sino = load_sinogram_row(proj_paths, row, progress)
+        if settings.bh_enable:
+            _log(f"Algotom beam hardening q={settings.bh_q} n={settings.bh_n}", progress)
+            sino = apply_beam_hardening(sino, settings)
         n_angles = sino.shape[0]
         thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
         base_c, shift_c, center = resolve_center(sino, settings, width)
@@ -836,6 +883,11 @@ def run_full(
             row1 = min(row0 + chunk, height)
             for r in range(row0, row1):
                 sino = projections[:, r, :].copy()
+                if settings.bh_enable:
+                    try:
+                        sino = apply_beam_hardening(sino, settings)
+                    except Exception as exc:
+                        _log(f"BH fail row {r}: {exc}", progress)
                 try:
                     sino = apply_ring_removal(sino, settings)
                 except Exception as exc:

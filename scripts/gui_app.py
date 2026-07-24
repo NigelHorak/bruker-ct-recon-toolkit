@@ -43,7 +43,6 @@ from gui_labels import (  # noqa: E402
 )
 from sweep_tools import (  # noqa: E402
     Candidate,
-    apply_simple_beam_hardening,
     sweep_alignment,
     sweep_beam_hardening,
     sweep_ring_recipes,
@@ -95,7 +94,9 @@ def _settings_from_ui(
     apply_log: bool,
     pixel_shift: float,
     preview_row: int,
-    output_dir: str,
+    bh_enable: bool,
+    bh_q: float,
+    bh_n: float,
 ) -> Settings:
     code_ring = RING_METHOD_TO_CODE.get(str(ring_method_label), "remove_all_stripe")
     rtype = SPEED_TO_CODE.get(str(speed_label_v), "FBP")
@@ -118,12 +119,16 @@ def _settings_from_ui(
         center=None,
         pixel_shift=_clamp_shift(pixel_shift),
         preview_row=int(preview_row) if int(preview_row or -1) >= 0 else None,
-        output_dir=(output_dir or "").strip(),
+        output_dir="",
         save_preview=True,
+        bh_enable=bool(bh_enable),
+        bh_q=float(bh_q),
+        bh_n=max(1.01, float(bh_n)),
+        bh_opt=True,
     )
 
 
-def ui_tuple(s: Settings, bh: float = 0.0) -> Tuple[Any, ...]:
+def ui_tuple(s: Settings) -> Tuple[Any, ...]:
     return (
         ring_label(s.ring_method if s.ring_enable else "none"),
         s.snr,
@@ -135,8 +140,9 @@ def ui_tuple(s: Settings, bh: float = 0.0) -> Tuple[Any, ...]:
         s.apply_log,
         _clamp_shift(s.pixel_shift or 0.0),
         0 if s.preview_row is None else int(s.preview_row),
-        s.output_dir or "",
-        float(bh or 0.0),
+        bool(s.bh_enable),
+        float(s.bh_q),
+        float(s.bh_n),
     )
 
 
@@ -455,8 +461,37 @@ def on_ring_strength(
         )
 
 
-def on_bh_sweep(base_img, bh_from, bh_to, bh_step, pix):
-    if base_img is None:
+def on_bh_single(cache, pixel_shift, bh_q, bh_n, apply_log, pix):
+    if cache is None:
+        return empty_viewer_html(), None, [], 0, {}, _slider_for(1, 0), centers_html(0, 0, 0), "Load a scan first."
+    progress = ProgressLog("BH single")
+    try:
+        q = float(bh_q)
+        cands = sweep_beam_hardening(
+            cache,
+            float(pixel_shift or 0.0),
+            q,
+            q,
+            max(q, 0.01),
+            float(bh_n),
+            True,
+            bool(apply_log),
+            progress,
+        )
+        stack = _cand_list(cands[:1] if cands else [])
+        if not stack:
+            return (
+                empty_viewer_html(),
+                None,
+                [],
+                0,
+                {},
+                _slider_for(1, 0),
+                centers_html(0, 0, 0),
+                f"No BH result.\n{progress.text()}",
+            )
+        return _stack_result(stack, pix, f"Tested Algotom BH q={q:.4g}.\n{progress.text()}")
+    except Exception as exc:
         return (
             empty_viewer_html(),
             None,
@@ -465,16 +500,31 @@ def on_bh_sweep(base_img, bh_from, bh_to, bh_step, pix):
             {},
             _slider_for(1, 0),
             centers_html(0, 0, 0),
-            "Load or preview a slice first.",
+            log_exception("BH single", exc),
         )
-    progress = ProgressLog("BH options")
+
+
+def on_bh_sweep(cache, pixel_shift, q_from, q_to, q_step, bh_n, apply_log, pix):
+    if cache is None:
+        return empty_viewer_html(), None, [], 0, {}, _slider_for(1, 0), centers_html(0, 0, 0), "Load a scan first."
+    progress = ProgressLog("BH range")
     try:
-        cands = sweep_beam_hardening(base_img, float(bh_from), float(bh_to), float(bh_step), progress)
+        cands = sweep_beam_hardening(
+            cache,
+            float(pixel_shift or 0.0),
+            float(q_from),
+            float(q_to),
+            float(q_step),
+            float(bh_n),
+            True,
+            bool(apply_log),
+            progress,
+        )
         stack = _cand_list(cands)
         return _stack_result(
             stack,
             pix,
-            f"{len(stack)} BH options ready - browse, then Use this BH.\n{progress.text()}",
+            f"{len(stack)} Algotom BH options ready - browse, then Use this BH.\n{progress.text()}",
         )
     except Exception as exc:
         return (
@@ -487,6 +537,24 @@ def on_bh_sweep(base_img, bh_from, bh_to, bh_step, pix):
             centers_html(0, 0, 0),
             log_exception("BH sweep", exc),
         )
+
+
+def on_use_bh(payload):
+    if not payload or "bh_q" not in payload:
+        return False, 0.05, 2.0, "Browse to a BH option first, then Use this BH."
+    return (
+        True,
+        float(payload.get("bh_q", 0.05)),
+        float(payload.get("bh_n", 2.0)),
+        f"Locked Algotom BH q={float(payload['bh_q']):.4g} n={float(payload.get('bh_n', 2.0)):.3g}",
+    )
+
+
+def on_bh_mode(mode: str):
+    import gradio as gr
+
+    single = mode == "Single value"
+    return gr.update(visible=single), gr.update(visible=not single)
 
 
 def on_recon_index(idx, stack, pix):
@@ -609,14 +677,6 @@ def on_use_ring(payload):
     )
 
 
-def on_use_bh(payload, base_img, pix):
-    if not payload or "bh_strength" not in payload:
-        return 0.0, empty_viewer_html(), base_img, "Browse to a BH option first."
-    s = float(payload["bh_strength"])
-    img = apply_simple_beam_hardening(base_img, s) if base_img is not None else None
-    return s, _view(img, pix), img, f"Locked BH strength {s:.2f}."
-
-
 def on_preview(scan_dir, before_cache, before_key, pix, *ctrl):
     scan_dir = (scan_dir or "").strip().strip('"')
     progress = ProgressLog("PREVIEW")
@@ -673,13 +733,25 @@ def on_full(scan_dir, *ctrl):
     scan_dir = (scan_dir or "").strip().strip('"')
     progress = ProgressLog("FULL RECON")
     if not scan_dir:
-        return "Enter a scan folder."
+        return "Enter a scan folder.", ""
     try:
         settings = _settings_from_ui(*ctrl)
         result = run_full(Path(scan_dir), settings, progress=progress)
-        return f"{result.message}\n{progress.text()}"
+        out = str(result.out_dir)
+        return f"{result.message}\n{progress.text()}\nSaved to: {out}", out
     except Exception as exc:
-        return log_exception("Full recon", exc)
+        return log_exception("Full recon", exc), ""
+
+
+def on_show_folder(path: str):
+    path = (path or "").strip()
+    if not path or not Path(path).exists():
+        return "Nothing to open yet — run a full reconstruction first."
+    try:
+        os.startfile(path)  # type: ignore[attr-defined]
+        return f"Opened {path}"
+    except Exception as exc:
+        return log_exception("Show folder", exc)
 
 
 def on_apply_preset(name: str):
@@ -694,7 +766,7 @@ def on_save_recipe(name: str, *ctrl):
     import gradio as gr
 
     try:
-        settings = _settings_from_ui(*ctrl[:11])
+        settings = _settings_from_ui(*ctrl[:13])
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (name or "").strip()) or (
             f"recipe_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
@@ -768,22 +840,27 @@ def build_app():
         pixel_um = gr.State(0.0)
 
         pixel_shift = gr.Number(value=0.0, visible=False)
-        bh_strength = gr.Number(value=0.0, visible=False)
+        bh_enable = gr.Checkbox(value=False, visible=False)
+        bh_q = gr.Number(value=0.05, visible=False)
+        bh_n = gr.Number(value=2.0, visible=False)
         apply_log = gr.Checkbox(value=True, visible=False)
+        last_out_dir = gr.State("")
 
         with gr.Row(elem_classes=["ct-panel", "ct-scan-row"]):
             scan_dir = gr.Textbox(
                 label="Scan folder",
                 placeholder=r"D:\Results\...\MyScan",
-                scale=4,
+                scale=5,
                 elem_classes=["ct-mono"],
             )
-            btn_browse = gr.Button("Browse...", scale=1)
-            preview_row = gr.Number(value=0, label="Slice number", precision=0, scale=1)
+            preview_row = gr.Number(
+                value=0, label="Slice number", precision=0, scale=1, elem_classes=["ct-slice-narrow"]
+            )
             btn_mid = gr.Button("Middle (fastest)", scale=1)
-            btn_load = gr.Button("Load scan", variant="primary", scale=1)
+            with gr.Column(scale=1, min_width=120, elem_classes=["ct-scan-actions"]):
+                btn_browse = gr.Button("Browse...")
+                btn_load = gr.Button("Load scan", variant="primary")
 
-        gr.HTML(_help("Paste a path or Browse to pick the folder (not a file).", "folder"))
         scan_info = gr.Textbox(label="Scan info", interactive=False, lines=2, elem_classes=["ct-mono"])
 
         with gr.Row():
@@ -816,7 +893,6 @@ def build_app():
                             btn_p1 = gr.Button("Nudge +1")
 
                         centers_box = gr.HTML(centers_html(0, 0, 0))
-                        gr.HTML(_help("Read-only numbers for the reconstruction you are viewing.", "centers"))
                         btn_use_align = gr.Button("Use this alignment", variant="secondary")
 
                     with gr.Tab("Rings"):
@@ -869,22 +945,54 @@ def build_app():
                             btn_save = gr.Button("Save")
 
                     with gr.Tab("Beam hardening"):
-                        gr.HTML(_help("Simple post curve on the finished slice (not full physics).", "bh"))
-                        with gr.Row():
-                            bh_from = gr.Number(value=0.0, label="From", precision=2)
-                            bh_to = gr.Number(value=2.0, label="To", precision=2)
-                            bh_step = gr.Number(value=0.5, label="Step", precision=2)
-                        btn_bh_sweep = gr.Button("Generate BH options", variant="primary")
+                        gr.HTML(
+                            _help(
+                                "Real Algotom beam_hardening_correction on the sinogram (q / n).",
+                                "bh",
+                            )
+                        )
+                        bh_mode = gr.Radio(
+                            choices=["Single value", "Range"],
+                            value="Range",
+                            label="Mode",
+                        )
+                        with gr.Group(visible=False) as bh_single_box:
+                            bh_q_single = gr.Number(value=0.05, label="q (Algotom)", precision=4)
+                            bh_n_box = gr.Number(value=2.0, label="n (must be > 1)", precision=3)
+                            btn_bh_single = gr.Button("Test this BH", variant="primary")
+                        with gr.Group(visible=True) as bh_range_box:
+                            with gr.Row():
+                                bh_from = gr.Number(value=0.01, label="q From", precision=4)
+                                bh_to = gr.Number(value=0.2, label="q To", precision=4)
+                                bh_step = gr.Number(value=0.05, label="Step", precision=4)
+                            bh_n_range = gr.Number(value=2.0, label="n (fixed for range)", precision=3)
+                            btn_bh_sweep = gr.Button("Generate BH options", variant="primary")
                         btn_use_bh = gr.Button("Use this BH", variant="secondary")
+
+                    with gr.Tab("Nomar"):
+                        gr.HTML(
+                            "<div class='ct-help'>🍆💦🍑 sacred Nomar rituals "
+                            "(does absolutely nothing scientific) 🍆💦🍑</div>"
+                        )
+                        gooner = gr.Slider(0, 100, value=69, step=1, label="Gooner intensity")
+                        rizz = gr.Slider(0, 10, value=0.5, step=0.1, label="Rizz coefficient")
+                        chud = gr.Slider(-5, 5, value=0, step=0.25, label="Chud alignment")
+                        alpha = gr.Radio(
+                            choices=["Sigma", "Alpha", "Beta", "Ohio"],
+                            value="Sigma",
+                            label="Aura class",
+                        )
+                        btn_nomar = gr.Button("Deploy aura 🔥", variant="primary")
+                        nomar_out = gr.Textbox(label="Nomar oracle", lines=3, interactive=False)
 
                     with gr.Tab("Run"):
                         gr.HTML(_help("Fast for tuning; Careful 3D for the final volume.", "speed"))
                         speed = gr.Radio(
                             choices=speed_choices, value=speed_label(defaults.recon_type), label="Speed"
                         )
-                        output_dir = gr.Textbox(value="", label="Output override (optional)")
                         btn_preview = gr.Button("Preview this slice", variant="primary")
                         btn_full = gr.Button("Reconstruct full volume", variant="stop")
+                        btn_show_folder = gr.Button("Show in folder")
 
             with gr.Column(scale=4, min_width=520, elem_classes=["ct-panel", "ct-viewer-wrap"]):
                 gr.HTML(_help("Reconstruction", "viewer"))
@@ -915,7 +1023,9 @@ def build_app():
             apply_log,
             pixel_shift,
             preview_row,
-            output_dir,
+            bh_enable,
+            bh_q,
+            bh_n,
         ]
         stack_outs = [main_view, work_img, recon_stack, recon_idx, pending, recon_slider, centers_box, status]
         use_align_outs = [
@@ -943,8 +1053,15 @@ def build_app():
             status,
         ]
 
+        def _sync_bh_n(n_val):
+            return n_val, n_val
+
         align_mode.change(on_align_mode, inputs=[align_mode], outputs=[align_single_box, align_range_box])
         ring_mode.change(on_ring_mode, inputs=[ring_mode], outputs=[ring_recipes_box, ring_strength_box])
+        bh_mode.change(on_bh_mode, inputs=[bh_mode], outputs=[bh_single_box, bh_range_box])
+        bh_n_box.change(lambda v: v, inputs=[bh_n_box], outputs=[bh_n])
+        bh_n_range.change(lambda v: v, inputs=[bh_n_range], outputs=[bh_n])
+        bh_q_single.change(lambda v: v, inputs=[bh_q_single], outputs=[bh_q])
 
         btn_browse.click(on_browse_folder, inputs=[scan_dir], outputs=[scan_dir])
         btn_mid.click(on_middle_slice, inputs=[scan_dir, align_cache], outputs=[preview_row, status])
@@ -1035,16 +1152,32 @@ def build_app():
             outputs=[ring_method, snr, la_size, sm_size, drop_ratio, dim, status],
         )
 
+        btn_bh_single.click(
+            on_bh_single,
+            inputs=[align_cache, pixel_shift, bh_q_single, bh_n_box, apply_log, pixel_um],
+            outputs=stack_outs,
+        )
         btn_bh_sweep.click(
             on_bh_sweep,
-            inputs=[work_img, bh_from, bh_to, bh_step, pixel_um],
+            inputs=[align_cache, pixel_shift, bh_from, bh_to, bh_step, bh_n_range, apply_log, pixel_um],
             outputs=stack_outs,
         )
         btn_use_bh.click(
             on_use_bh,
-            inputs=[pending, work_img, pixel_um],
-            outputs=[bh_strength, main_view, work_img, status],
+            inputs=[pending],
+            outputs=[bh_enable, bh_q, bh_n, status],
         )
+
+        def _nomar(g, r, c, a):
+            vibes = [
+                f"Gooner={g:.0f} Rizz={r:.1f} Chud={c:+.2f} class={a}",
+                "Nomar says: touch grass (but make it microscopic).",
+                "Aura deployed. Science unchanged. Ego +1.",
+                "egg plant water peach protocol: acknowledged.",
+            ]
+            return "\n".join(vibes)
+
+        btn_nomar.click(_nomar, inputs=[gooner, rizz, chud, alpha], outputs=[nomar_out])
 
         recon_slider.change(on_recon_index, inputs=[recon_slider, recon_stack, pixel_um], outputs=nav_outs)
         btn_recon_prev.click(on_recon_prev, inputs=[recon_idx, recon_stack, pixel_um], outputs=nav_outs)
@@ -1064,8 +1197,9 @@ def build_app():
                 apply_log,
                 pixel_shift,
                 preview_row,
-                output_dir,
-                bh_strength,
+                bh_enable,
+                bh_q,
+                bh_n,
                 status,
             ],
         )
@@ -1076,7 +1210,8 @@ def build_app():
             inputs=[scan_dir, before_cache, before_key, pixel_um, *recon_controls],
             outputs=preview_outs,
         )
-        btn_full.click(on_full, inputs=[scan_dir, *recon_controls], outputs=[status])
+        btn_full.click(on_full, inputs=[scan_dir, *recon_controls], outputs=[status, last_out_dir])
+        btn_show_folder.click(on_show_folder, inputs=[last_out_dir], outputs=[status])
 
     return demo
 

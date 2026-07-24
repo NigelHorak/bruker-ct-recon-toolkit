@@ -33,13 +33,15 @@ VIEWER_HEAD = """
 }
 .ct-tip:focus { outline: 2px solid #0f766e; outline-offset: 2px; }
 .ct-tip-bubble {
+  /* Hidden in-place; JS shows a fixed float so parents cannot clip it */
+  display: none !important;
+}
+.ct-tip-float {
   display: none;
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  transform: translateX(-50%);
+  position: fixed;
+  z-index: 2147483646 !important;
   min-width: 14rem;
-  max-width: 20rem;
+  max-width: 22rem;
   padding: 0.55rem 0.7rem;
   border-radius: 8px;
   background: #142033;
@@ -48,12 +50,12 @@ VIEWER_HEAD = """
   font-weight: 400;
   line-height: 1.35;
   text-align: left;
-  z-index: 10050;
-  box-shadow: 0 10px 28px rgba(20,32,51,0.35);
+  box-shadow: 0 12px 32px rgba(20,32,51,0.45);
   pointer-events: none;
   white-space: normal;
+  transform: translate(-50%, -100%);
 }
-.ct-tip-bubble::after {
+.ct-tip-float::after {
   content: "";
   position: absolute;
   top: 100%;
@@ -62,15 +64,21 @@ VIEWER_HEAD = """
   border: 6px solid transparent;
   border-top-color: #142033;
 }
-.ct-tip:hover .ct-tip-bubble,
-.ct-tip:focus .ct-tip-bubble,
-.ct-tip:focus-within .ct-tip-bubble { display: block; }
 
+.ct-readout-wrap { margin: 0.55rem 0 0.65rem; }
+.ct-readout-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #142033;
+  margin-bottom: 0.45rem;
+}
 .ct-readout {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.5rem;
-  margin: 0.55rem 0 0.65rem;
 }
 .ct-readout-card {
   background: #eef3f8;
@@ -78,19 +86,18 @@ VIEWER_HEAD = """
   border-radius: 10px;
   padding: 0.55rem 0.65rem;
 }
-.ct-readout-card .k {
-  display: block;
-  font-size: 0.72rem;
-  color: #5a6a7c;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 0.2rem;
-}
-.ct-readout-card .v {
+.ct-readout-card .line {
   font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 1.05rem;
-  font-weight: 600;
+  font-size: 0.95rem;
   color: #142033;
+  font-weight: 600;
+}
+.ct-readout-card .line .lab {
+  color: #5a6a7c;
+  font-weight: 500;
+  font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.78rem;
+  margin-right: 0.35rem;
 }
 
 .ct-viewer-root {
@@ -121,13 +128,6 @@ VIEWER_HEAD = """
 .ct-viewer-empty {
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #9aa8b8;
-  font-size: 0.95rem;
-  text-align: center;
-  padding: 1.5rem;
   background: #1a2332;
 }
 .ct-scalebar {
@@ -163,16 +163,54 @@ VIEWER_HEAD = """
   font-size: 0.8rem;
   text-align: center;
 }
-.ct-scan-row {
+.ct-scan-actions {
   display: flex !important;
-  align-items: flex-end !important;
-  gap: 0.55rem !important;
+  flex-direction: column !important;
+  gap: 0.4rem !important;
+  justify-content: flex-end !important;
 }
-.ct-scan-row > * { margin-top: 0 !important; margin-bottom: 0 !important; }
-.ct-scan-row button { height: 42px !important; }
+.ct-scan-actions button { width: 100% !important; height: 42px !important; }
+.ct-slice-narrow { max-width: 7.5rem !important; min-width: 5.5rem !important; }
 </style>
 <script>
 (function () {
+  /* ---- floating tooltips (escape Gradio overflow clipping) ---- */
+  var floatEl = null;
+  function getFloat() {
+    if (!floatEl) {
+      floatEl = document.createElement("div");
+      floatEl.className = "ct-tip-float";
+      document.body.appendChild(floatEl);
+    }
+    return floatEl;
+  }
+  function placeTip(tip) {
+    var bubble = tip.querySelector(".ct-tip-bubble");
+    if (!bubble) return;
+    var f = getFloat();
+    f.textContent = bubble.textContent || "";
+    f.style.display = "block";
+    var r = tip.getBoundingClientRect();
+    f.style.left = (r.left + r.width / 2) + "px";
+    f.style.top = Math.max(8, r.top - 10) + "px";
+  }
+  function hideTip() {
+    if (floatEl) floatEl.style.display = "none";
+  }
+  document.addEventListener("mouseover", function (e) {
+    var tip = e.target && e.target.closest ? e.target.closest(".ct-tip") : null;
+    if (tip) placeTip(tip);
+  }, true);
+  document.addEventListener("mouseout", function (e) {
+    var tip = e.target && e.target.closest ? e.target.closest(".ct-tip") : null;
+    if (!tip) return;
+    var to = e.relatedTarget;
+    if (to && tip.contains(to)) return;
+    hideTip();
+  }, true);
+  document.addEventListener("scroll", hideTip, true);
+
+  /* ---- zoom / pan viewer ---- */
   const MIN = 1, MAX = 8, STEP = 0.35;
 
   function niceNumber(value) {
@@ -235,9 +273,8 @@ VIEWER_HEAD = """
         return;
       }
       const r = stage.getBoundingClientRect();
-      const fit = Math.min(r.width / nw, r.height / nh); // CSS px per image pixel at zoom 1
+      const fit = Math.min(r.width / nw, r.height / nh);
       if (!(fit > 0)) { bar.style.display = "none"; return; }
-      // Physical µm per CSS pixel at current zoom
       const umPerCss = pixUm / (fit * scale);
       const targetUm = umPerCss * (r.width * 0.25);
       const niceUm = niceNumber(targetUm);
@@ -321,15 +358,20 @@ def tip_html(text: str) -> str:
 
 
 def centers_html(base: float, effective: float, shift: float) -> str:
+    tip = tip_html(
+        "Base = auto/log center. Effective = base + the shift you are viewing. Read-only."
+    )
     return (
+        "<div class='ct-readout-wrap'>"
+        f"<div class='ct-readout-title'>Current shifts {tip}</div>"
         "<div class='ct-readout'>"
-        f"<div class='ct-readout-card'><span class='k'>Base center</span>"
-        f"<span class='v'>{float(base):.3f}</span></div>"
-        f"<div class='ct-readout-card'><span class='k'>Effective center</span>"
-        f"<span class='v'>{float(effective):.3f}</span></div>"
-        f"<div class='ct-readout-card' style='grid-column:1/-1'><span class='k'>Center shift (what you are viewing)</span>"
-        f"<span class='v'>{float(shift):+.3f} px</span></div>"
-        "</div>"
+        f"<div class='ct-readout-card'><div class='line'>"
+        f"<span class='lab'>Base center:</span> {float(base):.3f}</div></div>"
+        f"<div class='ct-readout-card'><div class='line'>"
+        f"<span class='lab'>Effective center:</span> {float(effective):.3f}</div></div>"
+        f"<div class='ct-readout-card' style='grid-column:1/-1'><div class='line'>"
+        f"<span class='lab'>Center shift:</span> {float(shift):+.3f} px</div></div>"
+        "</div></div>"
     )
 
 
@@ -337,8 +379,7 @@ def empty_viewer_html() -> str:
     return (
         "<div class='ct-viewer-root'>"
         "<div class='ct-viewer-stage'>"
-        "<div class='ct-viewer-empty'>Reconstruction will appear here after you load a scan "
-        "or generate options.</div>"
+        "<div class='ct-viewer-empty'></div>"
         "</div>"
         "<p class='ct-viewer-hint'>Scroll to zoom · drag to pan · double-click to zoom in</p>"
         "</div>"
