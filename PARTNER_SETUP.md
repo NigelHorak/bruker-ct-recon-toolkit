@@ -41,7 +41,9 @@ A browser opens at `http://127.0.0.1:7860`. Keep the black window open while you
 1. Paste the Bruker scan folder path (TIFF projections + `.log`).
 2. Click **Load folder info**.
 3. Pick a preset if you want (mild / strong / rings off), or move the sliders.
-4. Click **Preview mid-slice (fast)**.
+4. Click **Preview mid-slice**.
+   - Use **FBP** for fast ring tuning.
+   - Use **FDK** when you want true cone-beam geometry (needs SOD/SDD in the `.log`; slower preview).
 5. Compare **BEFORE** vs **AFTER** images.
 6. Tweak sliders and Preview again until rings look good.
 7. Optional: type a name → **Save recipe**.

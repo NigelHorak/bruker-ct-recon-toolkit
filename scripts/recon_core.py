@@ -24,6 +24,8 @@ RING_METHODS = (
     "none",
 )
 
+RECON_TYPES = ("FBP", "FDK")
+
 RECON_METHODS = (
     "FBP_CUDA",
     "SIRT_CUDA",
@@ -35,7 +37,7 @@ RECON_METHODS = (
     "CGLS",
 )
 
-FILTER_NAMES = ("hann", "ram-lak", "shepp-logan", "cosine", "hamming")
+FILTER_NAMES = ("hann", "ram-lak", "shepp-logan", "cosine", "hamming", "ramlak")
 
 
 @dataclass
@@ -49,6 +51,7 @@ class Settings:
     drop_ratio: float = 0.1
     dim: int = 1
     # Recon
+    recon_type: str = "FBP"  # FBP (slice-wise) | FDK (cone-beam 3D)
     method: str = "FBP_CUDA"
     filter_name: str = "hann"
     apply_log: bool = True
@@ -73,6 +76,7 @@ class Settings:
                 "dim": self.dim,
             },
             "recon": {
+                "recon_type": self.recon_type,
                 "method": self.method,
                 "filter_name": self.filter_name,
                 "apply_log": self.apply_log,
@@ -95,6 +99,9 @@ class Settings:
         preview = cfg.get("preview", {}) or {}
         center = recon.get("center", None)
         center_mode = recon.get("center_mode") or ("manual" if center is not None else "auto")
+        recon_type = str(recon.get("recon_type", "FBP")).upper()
+        if recon_type not in ("FBP", "FDK"):
+            recon_type = "FBP"
         return Settings(
             ring_enable=bool(ring.get("enable", True)),
             ring_method=str(ring.get("method", "remove_all_stripe")),
@@ -103,6 +110,7 @@ class Settings:
             sm_size=int(ring.get("sm_size", 21)),
             drop_ratio=float(ring.get("drop_ratio", 0.1)),
             dim=int(ring.get("dim", 1)),
+            recon_type=recon_type,
             method=str(recon.get("method", "FBP_CUDA")),
             filter_name=str(recon.get("filter_name", "hann")),
             apply_log=bool(recon.get("apply_log", True)),
@@ -290,7 +298,6 @@ def reconstruct_sinogram(
         "filter_name": settings.filter_name,
         "apply_log": settings.apply_log,
     }
-    # num_iter used by iterative Astra methods
     if "SIRT" in settings.method.upper() or "SART" in settings.method.upper() or "CGLS" in settings.method.upper():
         kwargs["num_iter"] = settings.num_iter
     try:
@@ -302,6 +309,137 @@ def reconstruct_sinogram(
         else:
             raise
     return np.asarray(img, dtype=np.float32)
+
+
+def cone_geometry_from_log(meta: BrukerLogMeta) -> Dict[str, float]:
+    """Build Astra cone distances (in detector-pixel units) from Bruker .log fields."""
+    sod_mm = float(meta.object_to_source_mm)
+    sdd_mm = float(meta.camera_to_source_mm)
+    if sod_mm <= 0 or sdd_mm <= 0:
+        raise ValueError(
+            "FDK needs Object to Source (mm) and Camera to Source (mm) in the .log file."
+        )
+    odd_mm = sdd_mm - sod_mm
+    if odd_mm <= 0:
+        raise ValueError(f"Invalid geometry: Camera to Source ({sdd_mm}) must be > Object to Source ({sod_mm}).")
+    pix_obj_mm = float(meta.image_pixel_size_um) / 1000.0
+    if pix_obj_mm <= 0:
+        raise ValueError("FDK needs Image Pixel Size (um) in the .log file.")
+    mag = sdd_mm / sod_mm
+    pix_det_mm = pix_obj_mm * mag
+    return {
+        "sod_mm": sod_mm,
+        "odd_mm": odd_mm,
+        "sdd_mm": sdd_mm,
+        "mag": mag,
+        "pix_obj_mm": pix_obj_mm,
+        "pix_det_mm": pix_det_mm,
+        "sod_pix": sod_mm / pix_det_mm,
+        "odd_pix": odd_mm / pix_det_mm,
+    }
+
+
+def prepare_projections_for_fdk(
+    projections: np.ndarray,
+    center: float,
+    settings: Settings,
+    apply_rings: bool,
+    progress: ProgressCb = None,
+) -> np.ndarray:
+    """projections: (n_angles, rows, cols) → logged, COR-shifted, optionally ring-cleaned."""
+    data = np.asarray(projections, dtype=np.float32).copy()
+    if settings.apply_log:
+        data = np.maximum(data, 1e-6)
+        data = -np.log(data)
+
+    # Shift so geometric center matches estimated COR (integer roll is robust)
+    _, _, cols = data.shape
+    shift = int(round(((cols - 1) / 2.0) - float(center)))
+    if shift != 0:
+        _log(f"FDK COR shift: {shift} px", progress)
+        data = np.roll(data, shift, axis=2)
+
+    if apply_rings and settings.ring_enable and settings.ring_method != "none":
+        n_rows = data.shape[1]
+        _log(f"Applying ring removal to {n_rows} detector rows (FDK)...", progress)
+        for r in range(n_rows):
+            try:
+                data[:, r, :] = apply_ring_removal(data[:, r, :], settings)
+            except Exception as exc:
+                _log(f"Ring fail row {r}: {exc}", progress)
+            if r % 100 == 0 or r == n_rows - 1:
+                _log(f"  ring rows {r + 1}/{n_rows}", progress)
+    return data
+
+
+def reconstruct_fdk_volume(
+    projections: np.ndarray,
+    thetas: np.ndarray,
+    meta: BrukerLogMeta,
+    settings: Settings,
+    progress: ProgressCb = None,
+) -> np.ndarray:
+    """
+    Cone-beam FDK via Astra.
+    Input projections already prepared (log + COR shift + optional rings),
+    shape (n_angles, det_rows, det_cols).
+    Returns volume shaped (det_rows, det_cols, det_cols) roughly (z, y, x).
+    """
+    import astra
+
+    n_angles, det_rows, det_cols = projections.shape
+    geom = cone_geometry_from_log(meta)
+    _log(
+        f"FDK geometry: SOD={geom['sod_mm']:.3f} mm  ODD={geom['odd_mm']:.3f} mm  "
+        f"mag={geom['mag']:.3f}  pix_det={geom['pix_det_mm']*1000:.3f} um",
+        progress,
+    )
+
+    proj_geom = astra.create_proj_geom(
+        "cone",
+        1.0,
+        1.0,
+        det_rows,
+        det_cols,
+        thetas,
+        geom["sod_pix"],
+        geom["odd_pix"],
+    )
+    vol_geom = astra.create_vol_geom(det_cols, det_cols, det_rows)
+
+    proj_id = astra.data3d.create("-sino", proj_geom, projections)
+    vol_id = astra.data3d.create("-vol", vol_geom)
+    cfg = astra.astra_dict("FDK_CUDA")
+    cfg["ProjectionDataId"] = proj_id
+    cfg["ReconstructionDataId"] = vol_id
+    ftype = settings.filter_name.lower().replace("_", "-")
+    if ftype in ("ramlak", "ram-lak"):
+        ftype = "ram-lak"
+    cfg["option"] = {"FilterType": ftype}
+    try:
+        alg_id = astra.algorithm.create(cfg)
+    except Exception:
+        cfg.pop("option", None)
+        alg_id = astra.algorithm.create(cfg)
+    try:
+        _log("Running FDK_CUDA...", progress)
+        astra.algorithm.run(alg_id)
+        vol = astra.data3d.get(vol_id)
+    finally:
+        astra.algorithm.delete(alg_id)
+        astra.data3d.delete(vol_id)
+        astra.data3d.delete(proj_id)
+
+    return np.asarray(vol, dtype=np.float32)
+
+
+def extract_fdk_slice(volume: np.ndarray, row: int) -> np.ndarray:
+    """Pick axial slice nearest to detector row index from FDK volume."""
+    if volume.ndim != 3:
+        raise ValueError(f"Expected 3D FDK volume, got shape {volume.shape}")
+    z = volume.shape[0]
+    idx = int(np.clip(row, 0, z - 1))
+    return np.asarray(volume[idx], dtype=np.float32)
 
 
 def _norm_display(img: np.ndarray) -> np.ndarray:
@@ -374,33 +512,55 @@ def run_preview(
         shutil.rmtree(qc)
     qc.mkdir(parents=True, exist_ok=True)
 
-    _log(f"Preview row {row}/{height - 1}", progress)
-    sino = load_sinogram_row(proj_paths, row, progress)
-    n_angles = sino.shape[0]
-    thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
-    center = find_center(sino, settings, width)
-    _log(f"Center of rotation: {center:.3f}", progress)
+    recon_type = (settings.recon_type or "FBP").upper()
+    _log(f"Preview mode={recon_type}  row={row}/{height - 1}", progress)
 
-    img_raw = reconstruct_sinogram(sino.copy(), center, thetas, settings)
-    try:
-        sino_corr = apply_ring_removal(sino.copy(), settings)
-    except Exception as exc:
-        _log(f"Ring removal failed: {exc}", progress)
-        sino_corr = sino
-    img_corr = reconstruct_sinogram(sino_corr, center, thetas, settings)
+    if recon_type == "FDK":
+        _log("FDK preview loads the full projection stack (slower than FBP preview)...", progress)
+        projections = load_stack(proj_paths, progress)
+        n_angles = projections.shape[0]
+        thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
+        center = find_center(projections[:, mid, :], settings, width)
+        _log(f"Center of rotation: {center:.3f}", progress)
+
+        raw_prep = prepare_projections_for_fdk(
+            projections, center, settings, apply_rings=False, progress=progress
+        )
+        vol_raw = reconstruct_fdk_volume(raw_prep, thetas, meta, settings, progress)
+        img_raw = extract_fdk_slice(vol_raw, row)
+
+        corr_prep = prepare_projections_for_fdk(
+            projections, center, settings, apply_rings=True, progress=progress
+        )
+        vol_corr = reconstruct_fdk_volume(corr_prep, thetas, meta, settings, progress)
+        img_corr = extract_fdk_slice(vol_corr, row)
+    else:
+        sino = load_sinogram_row(proj_paths, row, progress)
+        n_angles = sino.shape[0]
+        thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
+        center = find_center(sino, settings, width)
+        _log(f"Center of rotation: {center:.3f}", progress)
+
+        img_raw = reconstruct_sinogram(sino.copy(), center, thetas, settings)
+        try:
+            sino_corr = apply_ring_removal(sino.copy(), settings)
+        except Exception as exc:
+            _log(f"Ring removal failed: {exc}", progress)
+            sino_corr = sino
+        img_corr = reconstruct_sinogram(sino_corr, center, thetas, settings)
 
     losa.save_image(str(qc / "preview_raw.tif"), img_raw)
     losa.save_image(str(qc / "preview_corrected.tif"), img_corr)
     if settings.save_preview:
-        save_qc_png(qc / "before.png", img_raw, f"BEFORE rings  row={row}")
-        save_qc_png(qc / "after.png", img_corr, f"AFTER rings  row={row}  c={center:.2f}")
+        save_qc_png(qc / "before.png", img_raw, f"BEFORE rings  {recon_type} row={row}")
+        save_qc_png(qc / "after.png", img_corr, f"AFTER rings  {recon_type} row={row}  c={center:.2f}")
 
     used = deepcopy(settings)
     used.center = center
-    used.center_mode = settings.center_mode
     used.preview_row = row
     run_info = {
         "mode": "preview",
+        "recon_type": recon_type,
         "preview_row": row,
         "scan_dir": str(scan_dir),
         "log_file": str(log_path),
@@ -410,11 +570,10 @@ def run_preview(
         "config": used.to_config_dict(),
         "meta_summary": meta.to_dict(),
     }
-    # shrink raw dump
     run_info["meta_summary"].pop("raw", None)
     save_yaml(out / "run_config.yaml", run_info)
 
-    msg = f"Preview OK. Center={center:.3f}. Saved under {out}"
+    msg = f"Preview OK ({recon_type}). Center={center:.3f}. Saved under {out}"
     _log(msg, progress)
     return PreviewResult(
         out_dir=out,
@@ -453,6 +612,8 @@ def run_full(
     slices_dir.mkdir(parents=True, exist_ok=True)
     qc.mkdir(parents=True, exist_ok=True)
 
+    recon_type = (settings.recon_type or "FBP").upper()
+    _log(f"Full recon mode={recon_type}", progress)
     _log("Loading full projection stack...", progress)
     projections = load_stack(proj_paths, progress)
     n_angles = projections.shape[0]
@@ -460,32 +621,50 @@ def run_full(
     center = find_center(projections[:, mid, :], settings, width)
     _log(f"Center of rotation: {center:.3f}", progress)
 
-    chunk = max(1, int(settings.chunk_size))
     mid_img = None
-    n_done = 0
-    for row0 in range(0, height, chunk):
-        row1 = min(row0 + chunk, height)
-        for r in range(row0, row1):
-            sino = projections[:, r, :].copy()
-            try:
-                sino = apply_ring_removal(sino, settings)
-            except Exception as exc:
-                _log(f"Ring fail row {r}: {exc}", progress)
-            img = reconstruct_sinogram(sino, center, thetas, settings)
+    if recon_type == "FDK":
+        prep = prepare_projections_for_fdk(
+            projections, center, settings, apply_rings=True, progress=progress
+        )
+        volume = reconstruct_fdk_volume(prep, thetas, meta, settings, progress)
+        # Save each z-slice
+        n_slices = volume.shape[0]
+        for r in range(n_slices):
+            img = np.asarray(volume[r], dtype=np.float32)
             losa.save_image(str(slices_dir / f"recon_{r:05d}.tif"), img)
-            if r == mid:
+            if r == mid or (r == n_slices // 2 and mid_img is None):
                 mid_img = img
-            n_done += 1
-        _log(f"Reconstructed rows {row0}..{row1 - 1} ({n_done}/{height})", progress)
+            if r % 50 == 0 or r == n_slices - 1:
+                _log(f"Saving FDK slices {r + 1}/{n_slices}", progress)
+        if mid_img is None:
+            mid_img = extract_fdk_slice(volume, mid)
+    else:
+        chunk = max(1, int(settings.chunk_size))
+        n_done = 0
+        for row0 in range(0, height, chunk):
+            row1 = min(row0 + chunk, height)
+            for r in range(row0, row1):
+                sino = projections[:, r, :].copy()
+                try:
+                    sino = apply_ring_removal(sino, settings)
+                except Exception as exc:
+                    _log(f"Ring fail row {r}: {exc}", progress)
+                img = reconstruct_sinogram(sino, center, thetas, settings)
+                losa.save_image(str(slices_dir / f"recon_{r:05d}.tif"), img)
+                if r == mid:
+                    mid_img = img
+                n_done += 1
+            _log(f"Reconstructed rows {row0}..{row1 - 1} ({n_done}/{height})", progress)
 
     if mid_img is not None and settings.save_preview:
         losa.save_image(str(qc / "preview_corrected.tif"), mid_img)
-        save_qc_png(qc / "after.png", mid_img, f"FULL mid row={mid} c={center:.2f}")
+        save_qc_png(qc / "after.png", mid_img, f"FULL {recon_type} mid c={center:.2f}")
 
     used = deepcopy(settings)
     used.center = center
     run_info = {
         "mode": "full",
+        "recon_type": recon_type,
         "scan_dir": str(scan_dir),
         "log_file": str(log_path),
         "n_projections": n_angles,
@@ -494,7 +673,7 @@ def run_full(
         "config": used.to_config_dict(),
     }
     save_yaml(out / "run_config.yaml", run_info)
-    msg = f"Full recon done. Slices: {slices_dir}"
+    msg = f"Full recon done ({recon_type}). Slices: {slices_dir}"
     _log(msg, progress)
     return FullResult(
         out_dir=out,
@@ -511,9 +690,18 @@ def probe_scan_info(scan_dir: str) -> Tuple[str, int, int, int]:
     """Return (status_text, height, width, mid_row) for GUI folder load."""
     scan_dir_p, log_path, meta, proj_paths, height, width = _prepare_scan(Path(scan_dir))
     mid = height // 2
+    geom_txt = ""
+    try:
+        g = cone_geometry_from_log(meta)
+        geom_txt = (
+            f" | SOD={g['sod_mm']:.2f}mm ODD={g['odd_mm']:.2f}mm "
+            f"pix={meta.image_pixel_size_um:.3f}um (FDK ready)"
+        )
+    except Exception as exc:
+        geom_txt = f" | FDK geometry incomplete: {exc}"
     text = (
         f"OK — {len(proj_paths)} projections | detector {height}×{width} | "
         f"log={log_path.name} | prefix={meta.filename_prefix!r} | "
-        f"rot_step={meta.rotation_step_deg}° | mid_row={mid}"
+        f"rot_step={meta.rotation_step_deg}° | mid_row={mid}{geom_txt}"
     )
     return text, height, width, mid

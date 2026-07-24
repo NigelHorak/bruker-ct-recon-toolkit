@@ -1,6 +1,6 @@
 ring:
-  enable: false
-  method: none
+  enable: true
+  method: remove_all_stripe
   snr: 3.0
   la_size: 51
   sm_size: 21
@@ -8,7 +8,7 @@ ring:
   dim: 1
 
 recon:
-  recon_type: FBP
+  recon_type: FDK
   method: FBP_CUDA
   filter_name: hann
   apply_log: true

@@ -19,11 +19,12 @@ Then **double-click `Start Toolkit.bat`** and use the browser GUI (sliders, prev
 Full checklist: [PARTNER_SETUP.md](PARTNER_SETUP.md)
 
 ## What the GUI controls
+- **FBP vs FDK** algorithm family (FDK uses cone-beam geometry from the `.log`)
 - Scan folder + preview row
 - Center of rotation (auto / manual)
 - Ring method + `snr`, `la_size`, `sm_size`, `drop_ratio`, `dim`
-- Recon method / filter / log / iterations / chunk size
-- Presets (mild / strong / off) and save-your-own recipes
+- FBP method / filter / log / iterations / chunk size
+- Presets (mild / strong / off / fdk_conebeam) and save-your-own recipes
 - Side-by-side BEFORE / AFTER mid-slice preview
 
 ## Scan folder layout

@@ -8,6 +8,7 @@ ring:
   dim: 1
 
 recon:
+  recon_type: FBP
   method: FBP_CUDA
   filter_name: hann
   apply_log: true

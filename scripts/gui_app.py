@@ -17,6 +17,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from recon_core import (  # noqa: E402
     FILTER_NAMES,
     RECON_METHODS,
+    RECON_TYPES,
     RING_METHODS,
     Settings,
     load_settings,
@@ -54,6 +55,7 @@ def _settings_from_ui(
     sm_size: int,
     drop_ratio: float,
     dim: int,
+    recon_type: str,
     method: str,
     filter_name: str,
     apply_log: bool,
@@ -65,6 +67,9 @@ def _settings_from_ui(
     output_dir: str,
 ) -> Settings:
     center_mode_l = center_mode.lower()
+    rtype = str(recon_type).upper()
+    if rtype not in ("FBP", "FDK"):
+        rtype = "FBP"
     return Settings(
         ring_enable=bool(ring_enable),
         ring_method=ring_method,
@@ -73,6 +78,7 @@ def _settings_from_ui(
         sm_size=int(sm_size) if int(sm_size) % 2 == 1 else int(sm_size) + 1,
         drop_ratio=float(drop_ratio),
         dim=int(dim),
+        recon_type=rtype,
         method=method,
         filter_name=filter_name,
         apply_log=bool(apply_log),
@@ -95,6 +101,7 @@ def ui_settings_tuple(s: Settings) -> Tuple[Any, ...]:
         s.sm_size,
         s.drop_ratio,
         s.dim,
+        s.recon_type,
         s.method,
         s.filter_name,
         s.apply_log,
@@ -123,67 +130,33 @@ def on_apply_preset(name: str):
     return (*ui_settings_tuple(s), f"Loaded preset: {name}")
 
 
-def on_preview(
-    scan_dir: str,
-    ring_enable,
-    ring_method,
-    snr,
-    la_size,
-    sm_size,
-    drop_ratio,
-    dim,
-    method,
-    filter_name,
-    apply_log,
-    num_iter,
-    chunk_size,
-    center_mode,
-    center_value,
-    preview_row,
-    output_dir,
-):
+def _ui_args_to_settings(args) -> Settings:
+    return _settings_from_ui(*args)
+
+
+def on_preview(scan_dir: str, *ctrl):
     scan_dir = (scan_dir or "").strip().strip('"')
     logs: List[str] = []
 
     def progress(msg: str) -> None:
         logs.append(msg)
 
+    center_value = ctrl[14] if len(ctrl) > 14 else 0.0
     try:
-        settings = _settings_from_ui(
-            ring_enable, ring_method, snr, la_size, sm_size, drop_ratio, dim,
-            method, filter_name, apply_log, num_iter, chunk_size,
-            center_mode, center_value, preview_row, output_dir,
-        )
+        settings = _ui_args_to_settings(ctrl)
         result = run_preview(Path(scan_dir), settings, progress=progress)
         status = (
             f"{result.message}\n"
             f"Center used: {result.center:.3f} | row={result.row} | "
-            f"{result.n_projections} projections\n" + "\n".join(logs[-8:])
+            f"type={settings.recon_type} | {result.n_projections} projections\n"
+            + "\n".join(logs[-8:])
         )
         return result.display_raw, result.display_corr, status, float(result.center)
     except Exception as exc:
         return None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:]), center_value
 
 
-def on_full(
-    scan_dir: str,
-    ring_enable,
-    ring_method,
-    snr,
-    la_size,
-    sm_size,
-    drop_ratio,
-    dim,
-    method,
-    filter_name,
-    apply_log,
-    num_iter,
-    chunk_size,
-    center_mode,
-    center_value,
-    preview_row,
-    output_dir,
-):
+def on_full(scan_dir: str, *ctrl):
     scan_dir = (scan_dir or "").strip().strip('"')
     logs: List[str] = []
 
@@ -191,45 +164,19 @@ def on_full(
         logs.append(msg)
 
     try:
-        settings = _settings_from_ui(
-            ring_enable, ring_method, snr, la_size, sm_size, drop_ratio, dim,
-            method, filter_name, apply_log, num_iter, chunk_size,
-            center_mode, center_value, preview_row, output_dir,
-        )
+        settings = _ui_args_to_settings(ctrl)
         result = run_full(Path(scan_dir), settings, progress=progress)
         return f"{result.message}\n" + "\n".join(logs[-20:])
     except Exception as exc:
         return f"FULL RECON FAILED: {exc}\n" + "\n".join(logs[-20:])
 
 
-def on_save_recipe(
-    recipe_name: str,
-    ring_enable,
-    ring_method,
-    snr,
-    la_size,
-    sm_size,
-    drop_ratio,
-    dim,
-    method,
-    filter_name,
-    apply_log,
-    num_iter,
-    chunk_size,
-    center_mode,
-    center_value,
-    preview_row,
-    output_dir,
-):
+def on_save_recipe(recipe_name: str, *ctrl):
     name = (recipe_name or "").strip()
     if not name:
         name = f"recipe_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
-    settings = _settings_from_ui(
-        ring_enable, ring_method, snr, la_size, sm_size, drop_ratio, dim,
-        method, filter_name, apply_log, num_iter, chunk_size,
-        center_mode, center_value, preview_row, output_dir,
-    )
+    settings = _ui_args_to_settings(ctrl)
     out = PRESET_DIR / f"{safe}.yaml"
     save_yaml(out, settings.to_config_dict())
     return f"Saved recipe: {out}", gr_preset_update()
@@ -281,11 +228,20 @@ def build_app():
             dim = gr.Radio(choices=[1, 2], value=defaults.dim, label="dim")
 
         with gr.Accordion("Reconstruction", open=True):
-            method = gr.Dropdown(choices=list(RECON_METHODS), value=defaults.method, label="Recon method")
+            recon_type = gr.Radio(
+                choices=list(RECON_TYPES),
+                value=getattr(defaults, "recon_type", "FBP"),
+                label="Algorithm family — FBP (fast per-slice) or FDK (true cone-beam, uses .log SOD/SDD)",
+            )
+            method = gr.Dropdown(
+                choices=list(RECON_METHODS),
+                value=defaults.method,
+                label="FBP family method (ignored when FDK is selected)",
+            )
             filter_name = gr.Dropdown(choices=list(FILTER_NAMES), value=defaults.filter_name, label="Filter")
             apply_log = gr.Checkbox(value=defaults.apply_log, label="Apply log (transmission → absorption)")
-            num_iter = gr.Slider(1, 500, value=defaults.num_iter, step=1, label="Iterations (SIRT/SART/CGLS)")
-            chunk_size = gr.Slider(1, 128, value=defaults.chunk_size, step=1, label="Chunk size (full recon)")
+            num_iter = gr.Slider(1, 500, value=defaults.num_iter, step=1, label="Iterations (SIRT/SART/CGLS; FBP only)")
+            chunk_size = gr.Slider(1, 128, value=defaults.chunk_size, step=1, label="Chunk size (FBP full recon)")
             center_mode = gr.Radio(choices=["auto", "manual"], value=defaults.center_mode, label="Center of rotation")
             center_value = gr.Number(value=0.0, label="Manual center (pixels)", precision=3)
             preview_row = gr.Number(value=-1, label="Preview row (-1 = middle)", precision=0)
@@ -293,12 +249,12 @@ def build_app():
 
         controls = [
             ring_enable, ring_method, snr, la_size, sm_size, drop_ratio, dim,
-            method, filter_name, apply_log, num_iter, chunk_size,
+            recon_type, method, filter_name, apply_log, num_iter, chunk_size,
             center_mode, center_value, preview_row, output_dir,
         ]
 
         with gr.Row():
-            btn_preview = gr.Button("Preview mid-slice (fast)", variant="primary")
+            btn_preview = gr.Button("Preview mid-slice", variant="primary")
             btn_full = gr.Button("Run full reconstruction", variant="stop")
 
         with gr.Row():

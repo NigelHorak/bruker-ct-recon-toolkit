@@ -14,7 +14,9 @@ ring:
   dim: 1
 
 recon:
-  # FBP_CUDA | SIRT_CUDA | SART_CUDA | CGLS_CUDA | FBP | SIRT | SART | CGLS
+  # FBP = fast slice-wise | FDK = cone-beam (uses SOD/SDD from .log)
+  recon_type: FBP
+  # Used when recon_type is FBP: FBP_CUDA | SIRT_CUDA | SART_CUDA | CGLS_CUDA | FBP | ...
   method: FBP_CUDA
   filter_name: hann
   apply_log: true
