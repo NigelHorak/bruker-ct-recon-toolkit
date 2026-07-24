@@ -1,0 +1,24 @@
+ring:
+  enable: true
+  method: remove_all_stripe
+  snr: 3.0
+  la_size: 51
+  sm_size: 21
+  drop_ratio: 0.1
+  dim: 1
+recon:
+  recon_type: FBP
+  method: FBP_CUDA
+  filter_name: hann
+  apply_log: true
+  num_iter: 100
+  chunk_size: 32
+  center_mode: auto
+  center: null
+  pixel_shift: 0.0
+io:
+  save_preview: true
+paths:
+  output_dir: ''
+preview:
+  row: null
