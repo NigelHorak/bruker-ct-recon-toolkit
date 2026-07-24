@@ -8,6 +8,10 @@
   Optional output folder.
 .PARAMETER Config
   Optional path to YAML config (default: config\default.yaml).
+.PARAMETER Preview
+  Fast single-slice mode for tuning ring removal (recommended first).
+.PARAMETER PreviewRow
+  Optional detector row index for -Preview (default: middle row).
 #>
 param(
     [Parameter(Mandatory = $true)]
@@ -17,7 +21,13 @@ param(
     [string]$OutDir = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$Config = ""
+    [string]$Config = "",
+
+    [Parameter(Mandatory = $false)]
+    [switch]$Preview,
+
+    [Parameter(Mandatory = $false)]
+    [int]$PreviewRow = -1
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,11 +77,22 @@ $argList = @(
 if ($OutDir) {
     $argList += @("--out-dir", $OutDir)
 }
+if ($Preview) {
+    $argList += "--preview"
+    if ($PreviewRow -ge 0) {
+        $argList += @("--preview-row", "$PreviewRow")
+    }
+}
 
-Write-Host "Running reconstruction..." -ForegroundColor Cyan
+if ($Preview) {
+    Write-Host "Running PREVIEW (single slice)..." -ForegroundColor Cyan
+} else {
+    Write-Host "Running FULL reconstruction..." -ForegroundColor Cyan
+}
 Write-Host "  ScanDir: $ScanDir"
 Write-Host "  Config:  $Config"
 if ($OutDir) { Write-Host "  OutDir:  $OutDir" }
+if ($Preview -and $PreviewRow -ge 0) { Write-Host "  PreviewRow: $PreviewRow" }
 
 & $condaExe @argList
 exit $LASTEXITCODE

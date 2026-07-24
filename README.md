@@ -8,16 +8,21 @@ Stack:
 
 Docs for ring methods: [Algotom ring removal](https://algotom.readthedocs.io/en/latest/toc/section4/section4_4.html) · [Sarepy background](https://sarepy.readthedocs.io/)
 
-## Partner: 3 steps
+## Partner: install once, preview first, then full recon
 
 ```powershell
 git clone https://github.com/NigelHorak/bruker-ct-recon-toolkit.git
 cd bruker-ct-recon-toolkit
 .\setup.ps1
+
+# Fast: one mid-slice for ring tuning (do this first)
+.\run_recon.ps1 -ScanDir "D:\path\to\bruker_scan" -Preview
+
+# After rings look good: full volume
 .\run_recon.ps1 -ScanDir "D:\path\to\bruker_scan"
 ```
 
-Full checklist: [PARTNER_SETUP.md](PARTNER_SETUP.md)
+Exact checklist: [PARTNER_SETUP.md](PARTNER_SETUP.md)
 
 ## What you need on disk
 
@@ -29,18 +34,30 @@ See [examples/example_scan_layout.txt](examples/example_scan_layout.txt).
 
 ## Outputs
 
-Default output folder next to the scan:
+**Preview** (`-Preview`) → next to the scan:
+
+```
+<scan>_algotom_preview/
+  qc/mid_slice.png
+  qc/preview_slice.tif
+  run_config.yaml
+```
+
+**Full recon** →:
 
 ```
 <scan>_algotom_recon/
   slices/          # reconstructed TIFFs
-  qc/mid_slice.png # quick look
-  run_config.yaml  # parameters used for this run
+  qc/mid_slice.png
+  run_config.yaml
 ```
 
 ## Tuning rings
 
-Edit [config/default.yaml](config/default.yaml) or pass overrides:
+1. Run with `-Preview`
+2. Edit [config/default.yaml](config/default.yaml)
+3. Re-run `-Preview` until happy
+4. Run full recon (no `-Preview`)
 
 | Knob | Meaning |
 |------|---------|
@@ -49,6 +66,8 @@ Edit [config/default.yaml](config/default.yaml) or pass overrides:
 | `ring.sm_size` | Small-stripe filter size (odd, e.g. 21) |
 
 Heavier rings → lower `snr` and/or larger filter sizes. Too aggressive → soft detail loss.
+
+Optional row pick: `.\run_recon.ps1 -ScanDir "..." -Preview -PreviewRow 800`
 
 ## Hardware notes
 
