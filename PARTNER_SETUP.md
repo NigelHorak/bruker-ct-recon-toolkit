@@ -38,16 +38,12 @@ Double-click **`Start Toolkit.bat`**
 A browser opens at `http://127.0.0.1:7860`. Keep the black window open while you work.
 
 ### 4) In the GUI
-1. Paste the Bruker scan folder path (TIFF projections + `.log`).
-2. Click **Load folder + prepare align cache** (starts from log Postalignment).
-3. Nudge **pixel shift** / **Auto-tune** / **Multi-row align check** until the slice looks sharp.
-4. Pick a preset (mild / strong / rings off) or click **Compare ring methods**.
-5. Click **Full Preview** — check BEFORE / AFTER / difference image and the QC line in the log.
-6. Optional: **Preflight check** before a long run.
-7. Optional: type a name → **Save recipe**.
-8. Click **Run full reconstruction** (writes a **new timestamped** folder; never overwrites an old full run).
-
-Outputs appear next to the scan as `*_algotom_preview`, `*_algotom_recon_YYYYMMDD_HHMMSS`, and `*_algotom_history`.
+1. Paste the scan folder → **Load scan**.
+2. **Align** tab: nudge / Auto-tune / Multi-row check (image stays on the right).
+3. **Rings** tab: preset or Compare all methods.
+4. **Algorithm** tab: FBP vs FDK (Advanced for COR / output).
+5. **Run** tab: Full Preview → check **Rings QC** viewer → Preflight → full recon.
+6. Use viewer tabs: Align view | Rings QC | Method bake-off | History.
 
 ### Already installed earlier?
 ```powershell

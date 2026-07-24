@@ -37,6 +37,7 @@ from lab_tools import (  # noqa: E402
     preflight_scan,
     validate_alignment_rows,
 )
+from gui_style import GUI_CSS, build_theme  # noqa: E402
 
 PRESET_DIR = ROOT / "config" / "presets"
 DEFAULT_CFG = ROOT / "config" / "default.yaml"
@@ -329,124 +330,204 @@ def on_refresh_history(scan_dir: str):
 
 def build_app():
     import gradio as gr
+    import inspect
 
     defaults = load_settings(DEFAULT_CFG)
+    theme = build_theme()
 
-    with gr.Blocks(title="Bruker CT Algotom Toolkit") as demo:
-        gr.Markdown(
-            "# Bruker CT Algotom Toolkit\n"
-            "**Fast path:** Load → align → Full Preview (reuses BEFORE when only rings change).  \n"
-            "New: ring QC score + difference image, multi-row align check, ring-method bake-off, "
-            "preflight, timestamped full outputs (never overwrites)."
+    blocks_kwargs = {
+        "title": "Bruker CT Algotom Toolkit",
+        "theme": theme,
+        "css": GUI_CSS,
+    }
+    if "fill_width" in inspect.signature(gr.Blocks.__init__).parameters:
+        blocks_kwargs["fill_width"] = True
+
+    with gr.Blocks(**blocks_kwargs) as demo:
+        gr.HTML(
+            """
+            <div class="ct-header">
+              <div>
+                <div class="ct-brand">Bruker CT <span>Algotom</span></div>
+                <div class="ct-tagline">
+                  Align fast, kill rings, compare QC — load once, tune on the right, run when ready.
+                </div>
+              </div>
+              <div class="ct-steps">1 Load · 2 Align · 3 Rings · 4 Preview · 5 Full</div>
+            </div>
+            """
         )
 
         align_cache = gr.State(None)
         before_cache = gr.State(None)
         before_key = gr.State("")
-
-        with gr.Row():
-            scan_dir = gr.Textbox(
-                label="Scan folder (TIFF projections + .log)",
-                placeholder=r"D:\Data\MySample_scan",
-                scale=4,
-            )
-            btn_load = gr.Button("1) Load folder + prepare align cache", variant="primary", scale=2)
-
-        scan_info = gr.Textbox(label="Scan info", interactive=False)
         height_state = gr.Number(value=0, visible=False)
         width_state = gr.Number(value=0, visible=False)
-        preview_row = gr.Number(value=-1, label="Preview / align row (-1=mid)", precision=0)
 
-        with gr.Accordion("2) Pixel alignment (aim: ~30 seconds)", open=True):
-            gr.Markdown(
-                "Loads mid-row **once**, then nudges are fast FBP (no rings).  \n"
-                "Starts from **NRecon Postalignment** in the `.log`."
-            )
-            apply_log_align = gr.Checkbox(value=True, label="Apply log for align preview")
-            pixel_shift = gr.Slider(-5.0, 5.0, value=0.0, step=0.05, label="Pixel shift / postalignment (px)")
-            pixel_shift_num = gr.Number(value=0.0, label="Exact shift", precision=3)
-            with gr.Row():
-                btn_m05 = gr.Button("-0.5")
-                btn_m01 = gr.Button("-0.1")
-                btn_quick = gr.Button("Quick Align refresh", variant="secondary")
-                btn_p01 = gr.Button("+0.1")
-                btn_p05 = gr.Button("+0.5")
-            with gr.Row():
-                btn_auto = gr.Button("Auto-tune shift (±2 px)", variant="primary")
-                btn_align_check = gr.Button("Multi-row align check")
-                btn_reset = gr.Button("Reset to log / 0")
-            with gr.Row():
-                base_center_out = gr.Number(0, label="Base COR", interactive=False)
-                effective_center_out = gr.Number(0, label="Effective COR", interactive=False)
-            align_img = gr.Image(label="Quick align preview (FBP, no rings)", type="numpy")
-            align_status = gr.Textbox(label="Align status", lines=5)
+        # --- top: scan strip ---
+        with gr.Row(elem_classes=["ct-panel"]):
+            with gr.Column(scale=5):
+                scan_dir = gr.Textbox(
+                    label="Scan folder",
+                    placeholder=r"D:\Data\MySample_scan   (TIFF projections + .log)",
+                    elem_classes=["ct-mono"],
+                )
+            with gr.Column(scale=1, min_width=140):
+                preview_row = gr.Number(value=-1, label="Row (-1=mid)", precision=0)
+            with gr.Column(scale=1, min_width=160):
+                btn_load = gr.Button("Load scan", variant="primary", size="lg")
 
-        with gr.Accordion("3) Rings + full preview / reconstruct", open=True):
-            gr.Markdown(
-                "Full Preview builds **BEFORE once**, then reuses it while you only change ring settings.  \n"
-                "Status will say `reused_before=True` when the expensive before-recon was skipped."
-            )
-            with gr.Row():
-                preset = gr.Dropdown(choices=_preset_choices(), value="default", label="Preset")
-                btn_preset = gr.Button("Apply preset")
-                recipe_name = gr.Textbox(label="Save recipe as", placeholder="my_sample")
-                btn_save = gr.Button("Save recipe")
+        scan_info = gr.Textbox(
+            label="Scan",
+            interactive=False,
+            lines=2,
+            elem_classes=["ct-mono"],
+            max_lines=3,
+        )
 
-            with gr.Row():
-                ring_enable = gr.Checkbox(value=defaults.ring_enable, label="Enable ring removal")
-                ring_method = gr.Dropdown(choices=list(RING_METHODS), value=defaults.ring_method, label="Ring method")
-            snr = gr.Slider(1.0, 10.0, value=defaults.snr, step=0.1, label="snr")
-            la_size = gr.Slider(3, 151, value=defaults.la_size, step=2, label="la_size")
-            sm_size = gr.Slider(3, 101, value=defaults.sm_size, step=2, label="sm_size")
-            drop_ratio = gr.Slider(0.0, 0.5, value=defaults.drop_ratio, step=0.01, label="drop_ratio")
-            dim = gr.Radio(choices=[1, 2], value=defaults.dim, label="dim")
+        # --- main: controls rail | viewer ---
+        with gr.Row(equal_height=False):
+            # LEFT: controls
+            with gr.Column(scale=2, min_width=340, elem_classes=["ct-panel", "ct-rail", "ct-compact"]):
+                with gr.Tabs():
+                    with gr.Tab("Align"):
+                        gr.Markdown("Cached mid-row FBP — nudges stay fast.")
+                        apply_log_align = gr.Checkbox(value=True, label="Log transform (align)")
+                        pixel_shift = gr.Slider(
+                            -5.0, 5.0, value=0.0, step=0.05, label="Pixel shift (postalignment)"
+                        )
+                        pixel_shift_num = gr.Number(value=0.0, label="Exact shift", precision=3)
+                        with gr.Row():
+                            btn_m05 = gr.Button("-0.5", size="sm")
+                            btn_m01 = gr.Button("-0.1", size="sm")
+                            btn_quick = gr.Button("Refresh", size="sm")
+                            btn_p01 = gr.Button("+0.1", size="sm")
+                            btn_p05 = gr.Button("+0.5", size="sm")
+                        with gr.Row():
+                            btn_auto = gr.Button("Auto-tune", variant="primary")
+                            btn_align_check = gr.Button("Multi-row check")
+                            btn_reset = gr.Button("Reset log")
+                        with gr.Row():
+                            base_center_out = gr.Number(0, label="Base COR", interactive=False)
+                            effective_center_out = gr.Number(0, label="Effective COR", interactive=False)
+                        align_status = gr.Textbox(
+                            label="Align log", lines=4, elem_classes=["ct-mono"], max_lines=6
+                        )
 
-            recon_type = gr.Radio(choices=list(RECON_TYPES), value=defaults.recon_type, label="FBP or FDK")
-            method = gr.Dropdown(choices=list(RECON_METHODS), value=defaults.method, label="FBP method")
-            filter_name = gr.Dropdown(choices=list(FILTER_NAMES), value=defaults.filter_name, label="Filter")
-            apply_log = gr.Checkbox(value=defaults.apply_log, label="Apply log")
-            num_iter = gr.Slider(1, 500, value=defaults.num_iter, step=1, label="Iterations")
-            chunk_size = gr.Slider(1, 128, value=defaults.chunk_size, step=1, label="Chunk size")
-            center_mode = gr.Radio(choices=["auto", "manual"], value="auto", label="Base COR mode")
-            center_value = gr.Number(value=0.0, label="Manual base COR", precision=3)
-            output_dir = gr.Textbox(value="", label="Output folder override")
+                    with gr.Tab("Rings"):
+                        with gr.Row():
+                            preset = gr.Dropdown(
+                                choices=_preset_choices(), value="default", label="Preset", scale=2
+                            )
+                            btn_preset = gr.Button("Apply", scale=1)
+                        with gr.Row():
+                            recipe_name = gr.Textbox(label="Save as", placeholder="my_sample", scale=2)
+                            btn_save = gr.Button("Save", scale=1)
+                        ring_enable = gr.Checkbox(value=defaults.ring_enable, label="Enable ring removal")
+                        ring_method = gr.Dropdown(
+                            choices=list(RING_METHODS), value=defaults.ring_method, label="Method"
+                        )
+                        snr = gr.Slider(1.0, 10.0, value=defaults.snr, step=0.1, label="snr")
+                        la_size = gr.Slider(3, 151, value=defaults.la_size, step=2, label="la_size")
+                        sm_size = gr.Slider(3, 101, value=defaults.sm_size, step=2, label="sm_size")
+                        drop_ratio = gr.Slider(
+                            0.0, 0.5, value=defaults.drop_ratio, step=0.01, label="drop_ratio"
+                        )
+                        dim = gr.Radio(choices=[1, 2], value=defaults.dim, label="dim")
+                        btn_ring_cmp = gr.Button("Compare all methods (FBP)", variant="secondary")
 
-            controls = [
-                ring_enable, ring_method, snr, la_size, sm_size, drop_ratio, dim,
-                recon_type, method, filter_name, apply_log, num_iter, chunk_size,
-                center_mode, center_value, pixel_shift, preview_row, output_dir,
-            ]
+                    with gr.Tab("Algorithm"):
+                        recon_type = gr.Radio(
+                            choices=list(RECON_TYPES), value=defaults.recon_type, label="Family"
+                        )
+                        method = gr.Dropdown(
+                            choices=list(RECON_METHODS), value=defaults.method, label="FBP method"
+                        )
+                        filter_name = gr.Dropdown(
+                            choices=list(FILTER_NAMES), value=defaults.filter_name, label="Filter"
+                        )
+                        apply_log = gr.Checkbox(value=defaults.apply_log, label="Apply log")
+                        with gr.Accordion("Advanced", open=False):
+                            num_iter = gr.Slider(
+                                1, 500, value=defaults.num_iter, step=1, label="Iterations"
+                            )
+                            chunk_size = gr.Slider(
+                                1, 128, value=defaults.chunk_size, step=1, label="Chunk size"
+                            )
+                            center_mode = gr.Radio(
+                                choices=["auto", "manual"], value="auto", label="Base COR mode"
+                            )
+                            center_value = gr.Number(value=0.0, label="Manual base COR", precision=3)
+                            output_dir = gr.Textbox(value="", label="Output override")
 
-            with gr.Row():
-                btn_preview = gr.Button("Full Preview (rings + algorithm)", variant="primary")
-                btn_ring_cmp = gr.Button("Compare ring methods (FBP)")
-                btn_preflight = gr.Button("Preflight check")
-                btn_full = gr.Button("Run full reconstruction", variant="stop")
-            with gr.Row():
-                img_before = gr.Image(label="BEFORE rings (matched window)", type="numpy")
-                img_after = gr.Image(label="AFTER rings (matched window)", type="numpy")
-                img_diff = gr.Image(label="|AFTER − BEFORE| (what rings changed)", type="numpy")
-            compare_gallery = gr.Gallery(
-                label="Ring-method comparison",
-                columns=5,
-                height=280,
-                object_fit="contain",
-                preview=True,
-            )
-            status = gr.Textbox(label="Full preview / recon / QC log", lines=10)
+                    with gr.Tab("Run"):
+                        gr.Markdown(
+                            "Preview reuses BEFORE when only rings change.  \n"
+                            "Full recon always writes a **new timestamped** folder."
+                        )
+                        btn_preview = gr.Button("Full Preview", variant="primary")
+                        btn_preflight = gr.Button("Preflight check")
+                        btn_full = gr.Button("Run full reconstruction", variant="stop")
 
-        with gr.Accordion("4) History (compare past runs — settings under each image)", open=True):
-            gr.Markdown(
-                "Saved under `<scan>_algotom_history/`. Caption shows shift, rings, algorithm."
-            )
-            btn_hist = gr.Button("Refresh history")
-            history_gallery = gr.Gallery(
-                label="Reconstruction history",
-                columns=3,
-                height=480,
-                object_fit="contain",
-                preview=True,
-            )
+            # RIGHT: persistent viewer
+            with gr.Column(scale=3, min_width=480, elem_classes=["ct-panel", "ct-viewer"]):
+                with gr.Tabs() as viewer_tabs:
+                    with gr.Tab("Align view"):
+                        align_img = gr.Image(
+                            label="Quick align (FBP, no rings)",
+                            type="numpy",
+                            height=460,
+                        )
+                    with gr.Tab("Rings QC"):
+                        with gr.Row():
+                            img_before = gr.Image(label="BEFORE", type="numpy", height=360)
+                            img_after = gr.Image(label="AFTER", type="numpy", height=360)
+                        img_diff = gr.Image(label="|AFTER - BEFORE|", type="numpy", height=280)
+                    with gr.Tab("Method bake-off"):
+                        compare_gallery = gr.Gallery(
+                            label="Ring methods",
+                            columns=3,
+                            height=480,
+                            object_fit="contain",
+                            preview=True,
+                        )
+                    with gr.Tab("History"):
+                        btn_hist = gr.Button("Refresh history", size="sm")
+                        history_gallery = gr.Gallery(
+                            label="Saved runs (settings in captions)",
+                            columns=3,
+                            height=480,
+                            object_fit="contain",
+                            preview=True,
+                        )
+
+        status = gr.Textbox(
+            label="Activity / QC log",
+            lines=6,
+            max_lines=12,
+            elem_classes=["ct-mono", "ct-panel"],
+        )
+
+        controls = [
+            ring_enable,
+            ring_method,
+            snr,
+            la_size,
+            sm_size,
+            drop_ratio,
+            dim,
+            recon_type,
+            method,
+            filter_name,
+            apply_log,
+            num_iter,
+            chunk_size,
+            center_mode,
+            center_value,
+            pixel_shift,
+            preview_row,
+            output_dir,
+        ]
 
         # --- wiring ---
         pixel_shift.release(lambda v: float(v), inputs=pixel_shift, outputs=pixel_shift_num)
@@ -456,8 +537,16 @@ def build_app():
             on_load_and_cache,
             inputs=[scan_dir, preview_row],
             outputs=[
-                scan_info, height_state, width_state, preview_row, pixel_shift,
-                align_cache, align_img, align_status, base_center_out, effective_center_out,
+                scan_info,
+                height_state,
+                width_state,
+                preview_row,
+                pixel_shift,
+                align_cache,
+                align_img,
+                align_status,
+                base_center_out,
+                effective_center_out,
                 history_gallery,
             ],
         ).then(lambda v: float(v or 0.0), inputs=pixel_shift, outputs=pixel_shift_num)
@@ -465,18 +554,41 @@ def build_app():
         btn_quick.click(
             on_quick_align,
             inputs=[align_cache, pixel_shift, apply_log_align],
-            outputs=[align_img, align_status, base_center_out, effective_center_out, pixel_shift_num, history_gallery],
+            outputs=[
+                align_img,
+                align_status,
+                base_center_out,
+                effective_center_out,
+                pixel_shift_num,
+                history_gallery,
+            ],
         )
         for btn, delta in ((btn_m05, -0.5), (btn_m01, -0.1), (btn_p01, 0.1), (btn_p05, 0.5)):
             btn.click(
                 lambda c, s, a, d=delta: on_nudge(c, s, a, d),
                 inputs=[align_cache, pixel_shift, apply_log_align],
-                outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out, history_gallery],
+                outputs=[
+                    pixel_shift,
+                    pixel_shift_num,
+                    align_img,
+                    align_status,
+                    base_center_out,
+                    effective_center_out,
+                    history_gallery,
+                ],
             )
         btn_auto.click(
             on_auto_tune,
             inputs=[align_cache, apply_log_align],
-            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out, history_gallery],
+            outputs=[
+                pixel_shift,
+                pixel_shift_num,
+                align_img,
+                align_status,
+                base_center_out,
+                effective_center_out,
+                history_gallery,
+            ],
         )
         btn_align_check.click(
             on_align_check,
@@ -492,14 +604,30 @@ def build_app():
         btn_reset.click(
             _reset_shift,
             inputs=[align_cache],
-            outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out, history_gallery],
+            outputs=[
+                pixel_shift,
+                pixel_shift_num,
+                align_img,
+                align_status,
+                base_center_out,
+                effective_center_out,
+                history_gallery,
+            ],
         )
 
         btn_preset.click(on_apply_preset, inputs=[preset], outputs=[*controls, status])
         btn_preview.click(
             on_full_preview,
             inputs=[scan_dir, before_cache, before_key, *controls],
-            outputs=[img_before, img_after, img_diff, status, before_cache, before_key, history_gallery],
+            outputs=[
+                img_before,
+                img_after,
+                img_diff,
+                status,
+                before_cache,
+                before_key,
+                history_gallery,
+            ],
         )
         btn_ring_cmp.click(
             on_ring_compare,
@@ -510,6 +638,9 @@ def build_app():
         btn_full.click(on_full, inputs=[scan_dir, *controls], outputs=[status])
         btn_save.click(on_save_recipe, inputs=[recipe_name, *controls], outputs=[status, preset])
         btn_hist.click(on_refresh_history, inputs=[scan_dir], outputs=[history_gallery])
+
+        # silence unused warning if Gradio version lacks tab select
+        _ = viewer_tabs
 
     return demo
 
@@ -550,7 +681,7 @@ def _reclaim_port(port: int) -> None:
     pids = [p for p in _pids_listening_on_port(port) if p != os.getpid()]
     if not pids:
         return
-    print(f"Port {port} in use by PID(s) {pids} — closing previous toolkit instance...")
+    print(f"Port {port} in use by PID(s) {pids} - closing previous toolkit instance...")
     for pid in pids:
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/F", "/T"],
