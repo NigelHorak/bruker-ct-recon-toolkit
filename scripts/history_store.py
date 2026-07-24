@@ -75,13 +75,26 @@ def save_history_entry(
     return folder
 
 
-def list_history_gallery(scan_dir: Path, limit: int = 60) -> List[Tuple[str, str]]:
-    """Newest-first Gradio gallery entries: (png_path, caption with settings)."""
+def list_history_gallery(scan_dir: Path, limit: int = 60) -> List[Tuple[np.ndarray, str]]:
+    """
+    Newest-first Gradio gallery entries: (image_array, caption).
+    Returns in-memory images so Gradio does not need allowed_paths on the scan drive.
+    """
+    from PIL import Image
+
     root = history_root(Path(scan_dir))
     if not root.is_dir():
         return []
     entries = sorted([p for p in root.iterdir() if p.is_dir()], reverse=True)
-    out: List[Tuple[str, str]] = []
+    out: List[Tuple[np.ndarray, str]] = []
+
+    def _add(png: Path, caption: str) -> None:
+        try:
+            arr = np.asarray(Image.open(png).convert("RGB"))
+            out.append((arr, caption))
+        except Exception:
+            return
+
     for folder in entries[:limit]:
         caption_path = folder / "settings.txt"
         caption = caption_path.read_text(encoding="utf-8").strip() if caption_path.is_file() else folder.name
@@ -90,16 +103,15 @@ def list_history_gallery(scan_dir: Path, limit: int = 60) -> List[Tuple[str, str
         align = folder / "align.png"
         diff = folder / "diff.png"
         if after.is_file():
-            out.append((str(after), f"{folder.name}  AFTER\n{caption}"))
+            _add(after, f"{folder.name}  AFTER\n{caption}")
         if before.is_file():
-            out.append((str(before), f"{folder.name}  BEFORE\n{caption}"))
+            _add(before, f"{folder.name}  BEFORE\n{caption}")
         if diff.is_file():
-            out.append((str(diff), f"{folder.name}  |DIFF|\n{caption}"))
+            _add(diff, f"{folder.name}  |DIFF|\n{caption}")
         if align.is_file() and not after.is_file():
-            out.append((str(align), f"{folder.name}\n{caption}"))
-        # Ring-compare tiles (m_0_none.png etc.)
+            _add(align, f"{folder.name}\n{caption}")
         for png in sorted(folder.glob("m_*.png")):
-            out.append((str(png), f"{folder.name}\n{png.stem}\n{caption}"))
+            _add(png, f"{folder.name}\n{png.stem}\n{caption}")
     return out
 
 

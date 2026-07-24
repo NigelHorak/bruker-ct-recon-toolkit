@@ -740,18 +740,36 @@ def _reclaim_port(port: int) -> None:
         time.sleep(0.25)
 
 
+def _gradio_allowed_paths() -> list[str]:
+    """Let Gradio read history/QC on any local drive (lab PCs often use D:\\Results)."""
+    paths = [str(ROOT.resolve())]
+    if os.name == "nt":
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+            root = f"{letter}:\\"
+            if os.path.isdir(root):
+                paths.append(root)
+    else:
+        paths.append("/")
+    return paths
+
+
 def main() -> None:
+    import inspect
+
     port = 7860
     _reclaim_port(port)
     print(f"Opening GUI at http://127.0.0.1:{port}")
     print(f"Activity log file: {log_path()}")
     demo = build_app()
-    demo.queue().launch(
-        server_name="127.0.0.1",
-        server_port=port,
-        inbrowser=True,
-        show_error=True,
-    )
+    launch_kwargs = {
+        "server_name": "127.0.0.1",
+        "server_port": port,
+        "inbrowser": True,
+        "show_error": True,
+    }
+    if "allowed_paths" in inspect.signature(demo.launch).parameters:
+        launch_kwargs["allowed_paths"] = _gradio_allowed_paths()
+    demo.queue().launch(**launch_kwargs)
 
 
 if __name__ == "__main__":
