@@ -238,11 +238,12 @@ def load_sinogram_row(paths: List[Path], row: int, progress: ProgressCb = None) 
 
 
 def default_output_dir(scan_dir: Path, configured: str, preview: bool) -> Path:
+    """Outputs live under <scan>/algotom/ (preview or recon)."""
     if configured:
         out = Path(configured)
-        return out if out.is_absolute() else scan_dir / out
-    suffix = "_algotom_preview" if preview else "_algotom_recon"
-    return scan_dir.parent / f"{scan_dir.name}{suffix}"
+        return out if out.is_absolute() else Path(scan_dir) / out
+    root = Path(scan_dir) / "algotom"
+    return root / ("preview" if preview else "recon")
 
 
 def save_qc_png(path: Path, img: np.ndarray, title: str) -> None:

@@ -11,8 +11,9 @@ import numpy as np
 
 
 def history_root(scan_dir: Path) -> Path:
+    """History lives inside the scan folder: <scan>/algotom/history/."""
     scan_dir = Path(scan_dir)
-    return scan_dir.parent / f"{scan_dir.name}_algotom_history"
+    return scan_dir / "algotom" / "history"
 
 
 def settings_caption(settings_dict: Dict[str, Any], kind: str, extra: str = "") -> str:
@@ -76,42 +77,62 @@ def save_history_entry(
 
 
 def list_history_gallery(scan_dir: Path, limit: int = 60) -> List[Tuple[np.ndarray, str]]:
+    """Newest-first Gradio gallery: (image_array, caption)."""
+    entries = list_history_entries(scan_dir, limit=limit)
+    return [(e["image"], e["caption"]) for e in entries]
+
+
+def list_history_entries(scan_dir: Path, limit: int = 40) -> List[Dict[str, Any]]:
     """
-    Newest-first Gradio gallery entries: (image_array, caption).
-    Returns in-memory images so Gradio does not need allowed_paths on the scan drive.
+    Newest-first history cards with image + settings for restore-on-click.
+    Each item: image (np), caption (str), settings (dict), kind (str), folder (str)
     """
+    import yaml
     from PIL import Image
 
     root = history_root(Path(scan_dir))
     if not root.is_dir():
         return []
-    entries = sorted([p for p in root.iterdir() if p.is_dir()], reverse=True)
-    out: List[Tuple[np.ndarray, str]] = []
+    folders = sorted([p for p in root.iterdir() if p.is_dir()], reverse=True)
+    out: List[Dict[str, Any]] = []
 
-    def _add(png: Path, caption: str) -> None:
-        try:
-            arr = np.asarray(Image.open(png).convert("RGB"))
-            out.append((arr, caption))
-        except Exception:
-            return
-
-    for folder in entries[:limit]:
+    for folder in folders[:limit]:
         caption_path = folder / "settings.txt"
         caption = caption_path.read_text(encoding="utf-8").strip() if caption_path.is_file() else folder.name
-        after = folder / "after.png"
-        before = folder / "before.png"
-        align = folder / "align.png"
-        diff = folder / "diff.png"
-        if after.is_file():
-            _add(after, f"{folder.name}  AFTER\n{caption}")
-        if before.is_file():
-            _add(before, f"{folder.name}  BEFORE\n{caption}")
-        if diff.is_file():
-            _add(diff, f"{folder.name}  |DIFF|\n{caption}")
-        if align.is_file() and not after.is_file():
-            _add(align, f"{folder.name}\n{caption}")
-        for png in sorted(folder.glob("m_*.png")):
-            _add(png, f"{folder.name}\n{png.stem}\n{caption}")
+        cfg: Dict[str, Any] = {}
+        yaml_path = folder / "settings.yaml"
+        if yaml_path.is_file():
+            try:
+                raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+                cfg = raw.get("config") or {}
+            except Exception:
+                cfg = {}
+
+        # Prefer after > align > before > first m_*.png
+        candidates = [
+            folder / "after.png",
+            folder / "align.png",
+            folder / "before.png",
+            folder / "diff.png",
+        ]
+        candidates.extend(sorted(folder.glob("m_*.png")))
+        img_path = next((p for p in candidates if p.is_file()), None)
+        if img_path is None:
+            continue
+        try:
+            arr = np.asarray(Image.open(img_path).convert("RGB"))
+        except Exception:
+            continue
+        out.append(
+            {
+                "image": arr,
+                "caption": f"{folder.name}\n{caption}",
+                "settings": cfg,
+                "kind": folder.name,
+                "folder": str(folder),
+                "png": str(img_path),
+            }
+        )
     return out
 
 

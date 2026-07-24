@@ -14,9 +14,7 @@ For the lab PC (Windows + NVIDIA GPU).
 nvidia-smi
 ```
 
-### 2) One-time install (only commands you need)
-
-Open **PowerShell**:
+### 2) One-time install
 
 ```powershell
 cd $env:USERPROFILE\Downloads
@@ -25,34 +23,30 @@ cd bruker-ct-recon-toolkit
 .\setup.ps1
 ```
 
-Wait for `SMOKE TEST PASSED` and `SETUP COMPLETE` (15–40 minutes the first time).
+### 3) Every day
 
-### 3) Every day — double-click only
-
-In File Explorer open:
-
-`Downloads\bruker-ct-recon-toolkit\`
-
-Double-click **`Start Toolkit.bat`**
-
-A browser opens at `http://127.0.0.1:7860`. Keep the black window open while you work.
+Double-click **`Start Toolkit.bat`** — browser opens at `http://127.0.0.1:7860`.
 
 ### 4) In the GUI
-1. Paste the scan folder → **Load scan**.
-2. **Align** tab: nudge / Auto-tune / Multi-row check (image stays on the right).
-3. **Rings** tab: preset or Compare all methods.
-4. **Algorithm** tab: FBP vs FDK (Advanced for COR / output).
-5. **Run** tab: Full Preview → check **Rings QC** viewer → Preflight → full recon.
-6. Use viewer tabs: Align view | Rings QC | Method bake-off | History.
+1. Paste scan folder → **Load scan**
+2. **Align** — nudge / Auto-find best until the viewer looks sharp
+3. **Rings** — preset or Try all cleaners
+4. **Run** — Preview this slice → when happy, Reconstruct full volume
+5. Click **History** thumbnails to reload an earlier look
 
-### Already installed earlier?
+Outputs are saved under the scan folder:
+
+`...\MyScan\algotom\history\`  
+`...\MyScan\algotom\preview\`  
+`...\MyScan\algotom\recon_YYYYMMDD_HHMMSS\`
+
+### Already installed?
 ```powershell
 cd $env:USERPROFILE\Downloads\bruker-ct-recon-toolkit
 git pull
-.\setup.ps1
 ```
-Then use **Start Toolkit.bat** again.
+Then restart **Start Toolkit.bat**.
 
 ## Do not
-- Point the GUI at an NRecon *reconstructed* folder — use raw projections + log.
-- Close the black console window while the GUI is open.
+- Point at an NRecon *reconstructed* folder — use raw projections + log
+- Close the black console while the GUI is open

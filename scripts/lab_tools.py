@@ -46,10 +46,13 @@ class PreflightReport:
 
 
 def versioned_full_output_dir(scan_dir: Path, settings: Settings) -> Path:
-    """Never overwrite a previous full recon — always stamp a new folder."""
-    base = default_output_dir(Path(scan_dir), settings.output_dir, preview=False)
+    """Never overwrite a previous full recon — always stamp a new folder under algotom/."""
+    if settings.output_dir:
+        base = default_output_dir(Path(scan_dir), settings.output_dir, preview=False)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return base.parent / f"{base.name}_{stamp}"
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return base.parent / f"{base.name}_{stamp}"
+    return Path(scan_dir) / "algotom" / f"recon_{stamp}"
 
 
 def _probe_nvidia() -> str:

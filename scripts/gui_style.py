@@ -1,6 +1,5 @@
 """
-Visual theme for the Bruker CT toolkit GUI.
-Instrument-style light UI: cool slate + teal accent (not purple / not dark-default).
+Visual theme — full-width instrument UI for Gradio 6+.
 """
 from __future__ import annotations
 
@@ -8,105 +7,116 @@ GUI_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
-  --ct-ink: #1a2332;
-  --ct-muted: #5c6b7a;
-  --ct-line: #d5dde6;
-  --ct-panel: rgba(255, 255, 255, 0.78);
+  --ct-ink: #142033;
+  --ct-muted: #5a6a7c;
+  --ct-line: #cfd8e3;
+  --ct-panel: rgba(255,255,255,0.88);
   --ct-teal: #0f766e;
-  --ct-teal-deep: #115e59;
+  --ct-teal-deep: #0b5f59;
   --ct-amber: #b45309;
-  --ct-wash: #e8eef4;
+}
+
+html, body {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: #e7eef5 !important;
 }
 
 .gradio-container {
-  max-width: 1480px !important;
-  margin: 0 auto !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0.75rem 1.1rem 1.25rem !important;
   font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif !important;
   color: var(--ct-ink) !important;
 }
 
-/* Soft instrument backdrop — cool wash, not flat white / not purple glow */
-.gradio-container,
-.main, .app {
+.gradio-container, .main, .app {
   background:
-    radial-gradient(1200px 500px at 8% -10%, rgba(15, 118, 110, 0.10), transparent 55%),
-    radial-gradient(900px 420px at 100% 0%, rgba(180, 83, 9, 0.06), transparent 50%),
-    linear-gradient(180deg, #f3f6f9 0%, var(--ct-wash) 100%) !important;
+    radial-gradient(1100px 420px at 0% -5%, rgba(15,118,110,0.12), transparent 55%),
+    radial-gradient(900px 380px at 100% 0%, rgba(180,83,9,0.07), transparent 50%),
+    linear-gradient(180deg, #f4f7fb 0%, #e7eef5 100%) !important;
 }
 
 .ct-header {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.35rem 0.15rem 0.85rem;
+  padding: 0.4rem 0.2rem 0.85rem;
   border-bottom: 1px solid var(--ct-line);
   margin-bottom: 0.85rem;
 }
 .ct-brand {
-  font-size: 1.55rem;
+  font-size: 1.65rem;
   font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-  color: var(--ct-ink);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
 }
-.ct-brand span {
-  color: var(--ct-teal);
-}
-.ct-tagline {
-  font-size: 0.92rem;
+.ct-brand span { color: var(--ct-teal); }
+.ct-sub {
   color: var(--ct-muted);
-  max-width: 34rem;
-  line-height: 1.35;
-}
-.ct-steps {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace;
-  font-size: 0.78rem;
-  color: var(--ct-teal-deep);
-  letter-spacing: 0.02em;
-  white-space: nowrap;
+  font-size: 0.92rem;
+  margin-top: 0.15rem;
 }
 
 .ct-panel {
   background: var(--ct-panel) !important;
   border: 1px solid var(--ct-line) !important;
-  border-radius: 14px !important;
-  padding: 0.65rem 0.75rem 0.85rem !important;
+  border-radius: 16px !important;
+  padding: 0.7rem 0.85rem 0.9rem !important;
+  box-shadow: 0 12px 30px rgba(20,32,51,0.06) !important;
   backdrop-filter: blur(8px);
-  box-shadow: 0 10px 28px rgba(26, 35, 50, 0.05) !important;
 }
 
-.ct-viewer {
-  min-height: 520px;
+.ct-nudge {
+  display: grid !important;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  gap: 0.45rem !important;
+}
+.ct-nudge > * { width: 100% !important; min-width: 0 !important; }
+
+.ct-preset-row {
+  display: grid !important;
+  grid-template-columns: 1fr auto !important;
+  gap: 0.45rem !important;
+  align-items: end !important;
 }
 
-.ct-rail .tabs,
-.ct-viewer .tabs {
-  background: transparent !important;
+.ct-viewer-wrap .image-container,
+.ct-viewer-wrap img {
+  max-height: min(72vh, 820px) !important;
+  object-fit: contain !important;
 }
 
-button.primary, .primary {
+.ct-history .gallery,
+.ct-history {
+  min-height: 140px;
+}
+
+button.primary {
   background: linear-gradient(180deg, #0f766e, #0d9488) !important;
   border: none !important;
-  color: white !important;
+  color: #fff !important;
   font-weight: 600 !important;
 }
-button.stop, .stop {
+button.stop {
   background: linear-gradient(180deg, #c2410c, #b45309) !important;
   border: none !important;
-  color: white !important;
+  color: #fff !important;
   font-weight: 600 !important;
 }
 
-.ct-compact label, .ct-compact .label-wrap {
-  font-size: 0.82rem !important;
-}
 .ct-mono textarea, .ct-mono input {
   font-family: 'IBM Plex Mono', ui-monospace, monospace !important;
   font-size: 0.8rem !important;
 }
 
 footer { display: none !important; }
+
+@media (max-width: 1100px) {
+  .ct-nudge { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+}
 """
 
 
@@ -122,4 +132,4 @@ def build_theme():
             font_mono=[gr.themes.GoogleFont("IBM Plex Mono"), "ui-monospace", "monospace"],
         )
     except Exception:
-        return gr.themes.Default()
+        return None

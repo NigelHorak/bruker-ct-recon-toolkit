@@ -19,22 +19,16 @@ Then **double-click `Start Toolkit.bat`** and use the browser GUI (sliders, prev
 Full checklist: [PARTNER_SETUP.md](PARTNER_SETUP.md)
 
 ## What the GUI controls
-- **FBP vs FDK** algorithm family (FDK uses cone-beam geometry from the `.log`)
-- Scan folder + preview row
-- Center of rotation (auto / manual) + **pixel shift** (NRecon postalignment)
-- **Multi-row align check** (confidence when mid-row alone is unsure)
-- Ring method + `snr`, `la_size`, `sm_size`, `drop_ratio`, `dim`
-- **Compare ring methods** bake-off with ring QC scores
-- Full Preview: matched BEFORE/AFTER + **difference image** + ring-reduction %
-- **Preflight** (log, projection count, RAM estimate, GPU, FDK geometry)
-- FBP method / filter / log / iterations / chunk size
-- Presets (mild / strong / off / fdk_conebeam) and save-your-own recipes
-- History gallery under `<scan>_algotom_history/`
+- **Align** — fine alignment (Bruker postalignment), auto-find, top/mid/bottom check
+- **Rings** — plain-language ring cleaner + presets (YAML in `config/presets`)
+- **Run** — Fast vs Careful 3D, preview, full volume
+- One large viewer + history filmstrip (click a thumb to restore settings)
 
-## Outputs
-- Preview → `<scan>_algotom_preview/qc/` (`before.png`, `after.png`, `diff.png`, TIFFs, `run_config.yaml`)
-- Full → **timestamped** `<scan>_algotom_recon_YYYYMMDD_HHMMSS/` (never overwrites a prior full run)
-- History → `<scan>_algotom_history/`
+## Outputs (inside the scan folder)
+- `<scan>/algotom/history/`
+- `<scan>/algotom/preview/`
+- `<scan>/algotom/recon_YYYYMMDD_HHMMSS/`
+
 
 ## Power-user CLI (optional)
 `run_recon.ps1` still works if you want scripts; lab partners should use the GUI.

@@ -81,17 +81,16 @@ def startup_banner() -> str:
         from notify import notify_status
 
         alert = notify_status()
+        log_line(alert)
     except Exception:
-        alert = "Error alerts: unavailable"
-    log_line(alert)
-    return (
-        f"GUI ready.\n"
-        f"Log file: {LOG_PATH}\n"
-        f"{alert}\n"
-        f"Paste a scan folder and click Load scan.\n"
-        f"Errors appear here, in the black console, toolkit_gui.log, "
-        f"and (if configured) your email/ntfy."
-    )
+        alert = ""
+    lines = [
+        "Ready. Paste a scan folder and click Load scan.",
+        f"Log file: {LOG_PATH}",
+    ]
+    if alert:
+        lines.append(alert)
+    return "\n".join(lines)
 
 
 def safe_history(scan_dir: Optional[str]) -> list:
