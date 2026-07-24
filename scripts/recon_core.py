@@ -147,7 +147,10 @@ def load_settings(path: Path) -> Settings:
 
 
 def _log(msg: str, progress: ProgressCb = None) -> None:
-    print(msg)
+    try:
+        print(msg, flush=True)
+    except Exception:
+        pass
     if progress:
         progress(msg)
 

@@ -113,19 +113,13 @@ footer { display: none !important; }
 def build_theme():
     import gradio as gr
 
-    return gr.themes.Soft(
-        primary_hue=gr.themes.colors.teal,
-        secondary_hue=gr.themes.colors.stone,
-        neutral_hue=gr.themes.colors.slate,
-        font=[gr.themes.GoogleFont("IBM Plex Sans"), "ui-sans-serif", "system-ui", "sans-serif"],
-        font_mono=[gr.themes.GoogleFont("IBM Plex Mono"), "ui-monospace", "monospace"],
-        text_size=gr.themes.sizes.text_md,
-        spacing_size=gr.themes.sizes.spacing_sm,
-        radius_size=gr.themes.sizes.radius_md,
-    ).set(
-        body_text_color="#1a2332",
-        block_title_text_weight="600",
-        block_label_text_size="*text_sm",
-        button_large_padding="8px 14px",
-        button_small_padding="6px 10px",
-    )
+    try:
+        return gr.themes.Soft(
+            primary_hue=gr.themes.colors.teal,
+            secondary_hue=gr.themes.colors.stone,
+            neutral_hue=gr.themes.colors.slate,
+            font=[gr.themes.GoogleFont("IBM Plex Sans"), "ui-sans-serif", "system-ui", "sans-serif"],
+            font_mono=[gr.themes.GoogleFont("IBM Plex Mono"), "ui-monospace", "monospace"],
+        )
+    except Exception:
+        return gr.themes.Default()
