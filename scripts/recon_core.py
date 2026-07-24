@@ -59,6 +59,8 @@ class Settings:
     chunk_size: int = 32
     center_mode: str = "auto"  # auto | manual
     center: Optional[float] = None
+    # NRecon-style postalignment: added to auto/manual base COR (can be fractional)
+    pixel_shift: float = 0.0
     # IO / preview
     preview_row: Optional[int] = None  # None = mid
     output_dir: str = ""
@@ -84,6 +86,7 @@ class Settings:
                 "chunk_size": self.chunk_size,
                 "center_mode": self.center_mode,
                 "center": self.center,
+                "pixel_shift": self.pixel_shift,
             },
             "io": {"save_preview": self.save_preview},
             "paths": {"output_dir": self.output_dir},
@@ -118,6 +121,7 @@ class Settings:
             chunk_size=int(recon.get("chunk_size", 32)),
             center_mode=str(center_mode),
             center=None if center is None else float(center),
+            pixel_shift=float(recon.get("pixel_shift", 0.0) or 0.0),
             preview_row=preview.get("row", None),
             output_dir=str(paths.get("output_dir") or ""),
             save_preview=bool(io_cfg.get("save_preview", True)),
@@ -274,14 +278,27 @@ def apply_ring_removal(sino: np.ndarray, settings: Settings) -> np.ndarray:
 
 
 def find_center(sino: np.ndarray, settings: Settings, width: int) -> float:
-    if settings.center_mode == "manual" and settings.center is not None:
-        return float(settings.center)
-    import algotom.prep.calculation as calc
+    """Return effective COR = base (auto/manual) + pixel_shift."""
+    _, _, effective = resolve_center(sino, settings, width)
+    return effective
 
-    try:
-        return float(calc.find_center_vo(sino))
-    except Exception:
-        return (width - 1) / 2.0
+
+def resolve_center(sino: np.ndarray, settings: Settings, width: int) -> Tuple[float, float, float]:
+    """
+    Returns (base_center, pixel_shift, effective_center).
+    pixel_shift is the NRecon-style postalignment nudge (can be fractional).
+    """
+    if settings.center_mode == "manual" and settings.center is not None:
+        base = float(settings.center)
+    else:
+        import algotom.prep.calculation as calc
+
+        try:
+            base = float(calc.find_center_vo(sino))
+        except Exception:
+            base = (width - 1) / 2.0
+    shift = float(settings.pixel_shift or 0.0)
+    return base, shift, base + shift
 
 
 def reconstruct_sinogram(
@@ -352,12 +369,17 @@ def prepare_projections_for_fdk(
         data = np.maximum(data, 1e-6)
         data = -np.log(data)
 
-    # Shift so geometric center matches estimated COR (integer roll is robust)
+    # Sub-pixel shift so geometric mid matches effective COR (NRecon postalignment)
     _, _, cols = data.shape
-    shift = int(round(((cols - 1) / 2.0) - float(center)))
-    if shift != 0:
-        _log(f"FDK COR shift: {shift} px", progress)
-        data = np.roll(data, shift, axis=2)
+    shift = ((cols - 1) / 2.0) - float(center)
+    if abs(shift) > 1e-6:
+        _log(f"FDK COR shift: {shift:.3f} px", progress)
+        try:
+            from scipy.ndimage import shift as ndi_shift
+
+            data = ndi_shift(data, shift=(0.0, 0.0, shift), order=1, mode="nearest")
+        except Exception:
+            data = np.roll(data, int(round(shift)), axis=2)
 
     if apply_rings and settings.ring_enable and settings.ring_method != "none":
         n_rows = data.shape[1]
@@ -455,6 +477,8 @@ def _norm_display(img: np.ndarray) -> np.ndarray:
 class PreviewResult:
     out_dir: Path
     center: float
+    base_center: float
+    pixel_shift: float
     row: int
     height: int
     width: int
@@ -520,8 +544,11 @@ def run_preview(
         projections = load_stack(proj_paths, progress)
         n_angles = projections.shape[0]
         thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
-        center = find_center(projections[:, mid, :], settings, width)
-        _log(f"Center of rotation: {center:.3f}", progress)
+        base_c, shift_c, center = resolve_center(projections[:, mid, :], settings, width)
+        _log(
+            f"COR base={base_c:.3f}  pixel_shift={shift_c:.3f}  effective={center:.3f}",
+            progress,
+        )
 
         raw_prep = prepare_projections_for_fdk(
             projections, center, settings, apply_rings=False, progress=progress
@@ -538,8 +565,11 @@ def run_preview(
         sino = load_sinogram_row(proj_paths, row, progress)
         n_angles = sino.shape[0]
         thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
-        center = find_center(sino, settings, width)
-        _log(f"Center of rotation: {center:.3f}", progress)
+        base_c, shift_c, center = resolve_center(sino, settings, width)
+        _log(
+            f"COR base={base_c:.3f}  pixel_shift={shift_c:.3f}  effective={center:.3f}",
+            progress,
+        )
 
         img_raw = reconstruct_sinogram(sino.copy(), center, thetas, settings)
         try:
@@ -553,10 +583,15 @@ def run_preview(
     losa.save_image(str(qc / "preview_corrected.tif"), img_corr)
     if settings.save_preview:
         save_qc_png(qc / "before.png", img_raw, f"BEFORE rings  {recon_type} row={row}")
-        save_qc_png(qc / "after.png", img_corr, f"AFTER rings  {recon_type} row={row}  c={center:.2f}")
+        save_qc_png(
+            qc / "after.png",
+            img_corr,
+            f"AFTER rings  {recon_type} row={row}  c={center:.2f}  shift={shift_c:+.2f}",
+        )
 
     used = deepcopy(settings)
     used.center = center
+    used.pixel_shift = shift_c
     used.preview_row = row
     run_info = {
         "mode": "preview",
@@ -566,6 +601,8 @@ def run_preview(
         "log_file": str(log_path),
         "n_projections": n_angles,
         "volume_shape_hw": [height, width],
+        "base_center": base_c,
+        "pixel_shift": shift_c,
         "center": center,
         "config": used.to_config_dict(),
         "meta_summary": meta.to_dict(),
@@ -573,11 +610,16 @@ def run_preview(
     run_info["meta_summary"].pop("raw", None)
     save_yaml(out / "run_config.yaml", run_info)
 
-    msg = f"Preview OK ({recon_type}). Center={center:.3f}. Saved under {out}"
+    msg = (
+        f"Preview OK ({recon_type}). base={base_c:.3f} shift={shift_c:+.3f} "
+        f"effective={center:.3f}. Saved under {out}"
+    )
     _log(msg, progress)
     return PreviewResult(
         out_dir=out,
         center=center,
+        base_center=base_c,
+        pixel_shift=shift_c,
         row=row,
         height=height,
         width=width,
@@ -619,7 +661,11 @@ def run_full(
     n_angles = projections.shape[0]
     thetas = np.deg2rad(np.asarray(estimate_angles_deg(meta, n_angles), dtype=np.float64))
     center = find_center(projections[:, mid, :], settings, width)
-    _log(f"Center of rotation: {center:.3f}", progress)
+    base_c, shift_c, _ = resolve_center(projections[:, mid, :], settings, width)
+    _log(
+        f"COR base={base_c:.3f}  pixel_shift={shift_c:.3f}  effective={center:.3f}",
+        progress,
+    )
 
     mid_img = None
     if recon_type == "FDK":

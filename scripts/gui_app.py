@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
@@ -63,10 +63,11 @@ def _settings_from_ui(
     chunk_size: int,
     center_mode: str,
     center_value: float,
+    pixel_shift: float,
     preview_row: int,
     output_dir: str,
 ) -> Settings:
-    center_mode_l = center_mode.lower()
+    center_mode_l = str(center_mode).lower()
     rtype = str(recon_type).upper()
     if rtype not in ("FBP", "FDK"):
         rtype = "FBP"
@@ -86,6 +87,7 @@ def _settings_from_ui(
         chunk_size=int(chunk_size),
         center_mode=center_mode_l,
         center=float(center_value) if center_mode_l == "manual" else None,
+        pixel_shift=float(pixel_shift or 0.0),
         preview_row=int(preview_row) if preview_row >= 0 else None,
         output_dir=(output_dir or "").strip(),
         save_preview=True,
@@ -109,6 +111,7 @@ def ui_settings_tuple(s: Settings) -> Tuple[Any, ...]:
         s.chunk_size,
         s.center_mode,
         0.0 if s.center is None else float(s.center),
+        float(s.pixel_shift or 0.0),
         -1 if s.preview_row is None else int(s.preview_row),
         s.output_dir or "",
     )
@@ -141,19 +144,24 @@ def on_preview(scan_dir: str, *ctrl):
     def progress(msg: str) -> None:
         logs.append(msg)
 
-    center_value = ctrl[14] if len(ctrl) > 14 else 0.0
     try:
         settings = _ui_args_to_settings(ctrl)
         result = run_preview(Path(scan_dir), settings, progress=progress)
         status = (
             f"{result.message}\n"
-            f"Center used: {result.center:.3f} | row={result.row} | "
-            f"type={settings.recon_type} | {result.n_projections} projections\n"
+            f"base COR={result.base_center:.3f} | pixel_shift={result.pixel_shift:+.3f} | "
+            f"effective={result.center:.3f} | row={result.row} | {settings.recon_type}\n"
             + "\n".join(logs[-8:])
         )
-        return result.display_raw, result.display_corr, status, float(result.center)
+        return (
+            result.display_raw,
+            result.display_corr,
+            status,
+            float(result.base_center),
+            float(result.center),
+        )
     except Exception as exc:
-        return None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:]), center_value
+        return None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:]), 0.0, 0.0
 
 
 def on_full(scan_dir: str, *ctrl):
@@ -188,16 +196,21 @@ def gr_preset_update():
     return gr.update(choices=_preset_choices())
 
 
+def _nudge(shift: float, delta: float) -> float:
+    return float(round(float(shift or 0.0) + delta, 3))
+
+
 def build_app():
     import gradio as gr
 
     defaults = load_settings(DEFAULT_CFG)
+    default_shift = float(getattr(defaults, "pixel_shift", 0.0) or 0.0)
 
     with gr.Blocks(title="Bruker CT Algotom Toolkit") as demo:
         gr.Markdown(
             "# Bruker CT Algotom Toolkit\n"
-            "1) Paste the scan folder path  2) Adjust sliders  3) **Preview**  "
-            "4) When happy, **Run full reconstruction**"
+            "1) Paste scan folder  2) Tune rings + **pixel shift**  3) **Preview**  "
+            "4) **Run full reconstruction**"
         )
 
         with gr.Row():
@@ -227,11 +240,55 @@ def build_app():
             drop_ratio = gr.Slider(0.0, 0.5, value=defaults.drop_ratio, step=0.01, label="drop_ratio")
             dim = gr.Radio(choices=[1, 2], value=defaults.dim, label="dim")
 
+        with gr.Accordion("Alignment (postalignment / pixel shift)", open=True):
+            gr.Markdown(
+                "Like NRecon **Postalignment**: keep **auto** COR, then nudge **pixel shift** "
+                "until double edges / misalignment disappear. Your log used Postalignment ≈ 0.50 — "
+                "start near that and Preview."
+            )
+            center_mode = gr.Radio(
+                choices=["auto", "manual"],
+                value=defaults.center_mode,
+                label="Base center of rotation",
+            )
+            center_value = gr.Number(
+                value=0.0,
+                label="Manual base center (only used when mode = manual)",
+                precision=3,
+            )
+            pixel_shift = gr.Slider(
+                minimum=-20.0,
+                maximum=20.0,
+                value=default_shift,
+                step=0.05,
+                label="Pixel shift / postalignment (px)",
+            )
+            pixel_shift_num = gr.Number(
+                value=default_shift,
+                label="Pixel shift exact value",
+                precision=3,
+            )
+            with gr.Row():
+                btn_m1 = gr.Button("-1.0")
+                btn_m05 = gr.Button("-0.5")
+                btn_m01 = gr.Button("-0.1")
+                btn_p01 = gr.Button("+0.1")
+                btn_p05 = gr.Button("+0.5")
+                btn_p1 = gr.Button("+1.0")
+                btn_reset_shift = gr.Button("Reset shift to 0")
+            with gr.Row():
+                base_center_out = gr.Number(value=0.0, label="Base COR (from last Preview)", interactive=False)
+                effective_center_out = gr.Number(
+                    value=0.0,
+                    label="Effective COR = base + shift (from last Preview)",
+                    interactive=False,
+                )
+
         with gr.Accordion("Reconstruction", open=True):
             recon_type = gr.Radio(
                 choices=list(RECON_TYPES),
                 value=getattr(defaults, "recon_type", "FBP"),
-                label="Algorithm family — FBP (fast per-slice) or FDK (true cone-beam, uses .log SOD/SDD)",
+                label="Algorithm family — FBP (fast) or FDK (cone-beam)",
             )
             method = gr.Dropdown(
                 choices=list(RECON_METHODS),
@@ -242,15 +299,13 @@ def build_app():
             apply_log = gr.Checkbox(value=defaults.apply_log, label="Apply log (transmission → absorption)")
             num_iter = gr.Slider(1, 500, value=defaults.num_iter, step=1, label="Iterations (SIRT/SART/CGLS; FBP only)")
             chunk_size = gr.Slider(1, 128, value=defaults.chunk_size, step=1, label="Chunk size (FBP full recon)")
-            center_mode = gr.Radio(choices=["auto", "manual"], value=defaults.center_mode, label="Center of rotation")
-            center_value = gr.Number(value=0.0, label="Manual center (pixels)", precision=3)
             preview_row = gr.Number(value=-1, label="Preview row (-1 = middle)", precision=0)
             output_dir = gr.Textbox(value="", label="Output folder override (optional)")
 
         controls = [
             ring_enable, ring_method, snr, la_size, sm_size, drop_ratio, dim,
             recon_type, method, filter_name, apply_log, num_iter, chunk_size,
-            center_mode, center_value, preview_row, output_dir,
+            center_mode, center_value, pixel_shift, preview_row, output_dir,
         ]
 
         with gr.Row():
@@ -263,9 +318,25 @@ def build_app():
 
         status = gr.Textbox(label="Status / log", lines=12)
 
+        # Keep slider and number field in sync
+        pixel_shift.release(lambda v: float(v), inputs=pixel_shift, outputs=pixel_shift_num)
+        pixel_shift_num.change(lambda v: float(v or 0.0), inputs=pixel_shift_num, outputs=pixel_shift)
+
+        btn_m1.click(lambda s: (_nudge(s, -1.0), _nudge(s, -1.0)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
+        btn_m05.click(lambda s: (_nudge(s, -0.5), _nudge(s, -0.5)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
+        btn_m01.click(lambda s: (_nudge(s, -0.1), _nudge(s, -0.1)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
+        btn_p01.click(lambda s: (_nudge(s, 0.1), _nudge(s, 0.1)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
+        btn_p05.click(lambda s: (_nudge(s, 0.5), _nudge(s, 0.5)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
+        btn_p1.click(lambda s: (_nudge(s, 1.0), _nudge(s, 1.0)), inputs=pixel_shift, outputs=[pixel_shift, pixel_shift_num])
+        btn_reset_shift.click(lambda: (0.0, 0.0), outputs=[pixel_shift, pixel_shift_num])
+
         btn_load.click(on_load_folder, inputs=[scan_dir], outputs=[scan_info, height_state, width_state, preview_row])
         btn_preset.click(on_apply_preset, inputs=[preset], outputs=[*controls, status])
-        btn_preview.click(on_preview, inputs=[scan_dir, *controls], outputs=[img_before, img_after, status, center_value])
+        btn_preview.click(
+            on_preview,
+            inputs=[scan_dir, *controls],
+            outputs=[img_before, img_after, status, base_center_out, effective_center_out],
+        )
         btn_full.click(on_full, inputs=[scan_dir, *controls], outputs=[status])
         btn_save.click(on_save_recipe, inputs=[recipe_name, *controls], outputs=[status, preset])
 

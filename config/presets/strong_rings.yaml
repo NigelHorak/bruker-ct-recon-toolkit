@@ -16,6 +16,7 @@ recon:
   chunk_size: 32
   center_mode: auto
   center: null
+  pixel_shift: 0.0
 
 preview:
   row: null

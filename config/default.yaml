@@ -23,10 +23,10 @@ recon:
   # Used by iterative methods (SIRT/SART/CGLS)
   num_iter: 100
   chunk_size: 32
-  # auto | manual
+  # auto | manual base COR; pixel_shift is NRecon-style postalignment nudge
   center_mode: auto
-  # Used when center_mode is manual
   center: null
+  pixel_shift: 0.0
 
 preview:
   # null = middle detector row
