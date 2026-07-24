@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env/
+
+# Conda / local env helpers
+env/
+.miniconda_installer.exe
+
+# Outputs and large scan data
+output/
+outputs/
+*.tif
+*.tiff
+*.raw
+*.nrrd
+*.nii
+*.nii.gz
+
+# Keep docs/examples text
+!examples/**/*.txt
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Smoke / temp
+*.png
+!docs/**/*.png
+tmp/
+temp/

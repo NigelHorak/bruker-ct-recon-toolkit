@@ -1,0 +1,29 @@
+Expected Bruker / SkyScan-style scan folder layout
+=================================================
+
+MySample_scan/
+  MySample_scan.log          # required — acquisition geometry
+  MySample_scan00000000.tif  # projection 0
+  MySample_scan00000001.tif  # projection 1
+  ...
+  MySample_scan00000599.tif
+  MySample_scan0.tif         # optional flat / reference (naming varies)
+  MySample_scan_dark.tif     # optional dark (if present)
+
+Notes
+-----
+- Filenames usually share a prefix with an 8-digit (or 4-digit) index.
+- The .log file is plain text (INI-like) with keys such as:
+    Filename Prefix=
+    Number Of Files=
+    Number Of Rows=
+    Number Of Columns=
+    Rotation Step (deg)=
+    Use 360 Rotation=
+    Image Pixel Size (um)=
+    Object to Source (mm)=
+    Camera to Source (mm)=
+- Flat-field correction is often already applied in the saved TIFFs
+  (Flat Field Correction=ON in the log). The recon script will use
+  separate flat/dark files only if it can find them clearly.
+- Point run_recon.ps1 -ScanDir at this folder (the one that contains the .log).
