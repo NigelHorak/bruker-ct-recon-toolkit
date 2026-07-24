@@ -78,8 +78,23 @@ if (-not $condaExe) {
 Write-Host "Using conda: $condaExe"
 & $condaExe --version
 
+# Newer Miniconda requires accepting Anaconda channel Terms of Service
+Write-Step "Accepting conda channel Terms of Service"
+& $condaExe tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+& $condaExe tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+& $condaExe tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2
+
 # Make sure conda can run from this shell
 (& $condaExe "shell.powershell" "hook") | Out-String | Invoke-Expression
+
+function Invoke-CondaChecked {
+    param([Parameter(ValueFromRemainingArguments = $true)]$CondaArgs)
+    Write-Host ("conda " + ($CondaArgs -join " "))
+    & $condaExe @CondaArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "conda failed (exit $LASTEXITCODE): $($CondaArgs -join ' ')"
+    }
+}
 
 $CondaEnvName = "algotom-gpu"
 Write-Step "Creating / updating conda env '$CondaEnvName' (Python 3.11)"
@@ -87,17 +102,20 @@ $envList = & $condaExe env list | Out-String
 if ($envList -match [regex]::Escape($CondaEnvName)) {
     Write-Host "Env already exists - updating packages..."
 } else {
-    & $condaExe create -y -n $CondaEnvName python=3.11
+    Invoke-CondaChecked create -y -n $CondaEnvName -c conda-forge python=3.11
 }
 
 Write-Step "Installing Algotom + deps from conda-forge"
-& $condaExe install -y -n $CondaEnvName -c conda-forge algotom matplotlib tqdm h5py pyyaml pillow tifffile
+Invoke-CondaChecked install -y -n $CondaEnvName -c conda-forge algotom matplotlib tqdm h5py pyyaml pillow tifffile
 
 Write-Step "Installing Astra Toolbox (GPU)"
-& $condaExe install -y -n $CondaEnvName -c astra-toolbox -c nvidia astra-toolbox
+Invoke-CondaChecked install -y -n $CondaEnvName -c astra-toolbox -c nvidia -c conda-forge astra-toolbox
 
 Write-Step "Installing Gradio (GUI)"
 & $condaExe run -n $CondaEnvName python -m pip install --upgrade "gradio>=4.0"
+if ($LASTEXITCODE -ne 0) {
+    throw "Gradio install failed (exit $LASTEXITCODE)."
+}
 
 # --- activate helper ---
 Write-Step "Writing env\activate.ps1"
