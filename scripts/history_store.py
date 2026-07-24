@@ -88,12 +88,18 @@ def list_history_gallery(scan_dir: Path, limit: int = 60) -> List[Tuple[str, str
         after = folder / "after.png"
         before = folder / "before.png"
         align = folder / "align.png"
+        diff = folder / "diff.png"
         if after.is_file():
             out.append((str(after), f"{folder.name}  AFTER\n{caption}"))
         if before.is_file():
             out.append((str(before), f"{folder.name}  BEFORE\n{caption}"))
+        if diff.is_file():
+            out.append((str(diff), f"{folder.name}  |DIFF|\n{caption}"))
         if align.is_file() and not after.is_file():
             out.append((str(align), f"{folder.name}\n{caption}"))
+        # Ring-compare tiles (m_0_none.png etc.)
+        for png in sorted(folder.glob("m_*.png")):
+            out.append((str(png), f"{folder.name}\n{png.stem}\n{caption}"))
     return out
 
 

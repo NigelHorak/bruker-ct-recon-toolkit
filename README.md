@@ -21,18 +21,20 @@ Full checklist: [PARTNER_SETUP.md](PARTNER_SETUP.md)
 ## What the GUI controls
 - **FBP vs FDK** algorithm family (FDK uses cone-beam geometry from the `.log`)
 - Scan folder + preview row
-- Center of rotation (auto / manual)
+- Center of rotation (auto / manual) + **pixel shift** (NRecon postalignment)
+- **Multi-row align check** (confidence when mid-row alone is unsure)
 - Ring method + `snr`, `la_size`, `sm_size`, `drop_ratio`, `dim`
+- **Compare ring methods** bake-off with ring QC scores
+- Full Preview: matched BEFORE/AFTER + **difference image** + ring-reduction %
+- **Preflight** (log, projection count, RAM estimate, GPU, FDK geometry)
 - FBP method / filter / log / iterations / chunk size
 - Presets (mild / strong / off / fdk_conebeam) and save-your-own recipes
-- Side-by-side BEFORE / AFTER mid-slice preview
-
-## Scan folder layout
-See [examples/example_scan_layout.txt](examples/example_scan_layout.txt).
+- History gallery under `<scan>_algotom_history/`
 
 ## Outputs
-- Preview → `<scan>_algotom_preview/qc/` (`before.png`, `after.png`, TIFFs, `run_config.yaml`)
-- Full → `<scan>_algotom_recon/slices/` + QC
+- Preview → `<scan>_algotom_preview/qc/` (`before.png`, `after.png`, `diff.png`, TIFFs, `run_config.yaml`)
+- Full → **timestamped** `<scan>_algotom_recon_YYYYMMDD_HHMMSS/` (never overwrites a prior full run)
+- History → `<scan>_algotom_history/`
 
 ## Power-user CLI (optional)
 `run_recon.ps1` still works if you want scripts; lab partners should use the GUI.

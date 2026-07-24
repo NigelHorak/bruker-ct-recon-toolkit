@@ -4,7 +4,6 @@ Shared Bruker recon engine used by the GUI and CLI.
 from __future__ import annotations
 
 import re
-import shutil
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -493,6 +492,8 @@ class PreviewResult:
     before_reused: bool = False
     history_dir: Optional[Path] = None
     before_key: str = ""
+    display_diff: Optional[np.ndarray] = None
+    qc_metrics: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -616,8 +617,18 @@ def run_preview(
             img_corr = img_raw
             _log("Rings OFF — single reconstruction only", progress)
 
+    from qc_metrics import (
+        compare_pair,
+        difference_image,
+        format_qc_line,
+        shared_norm_pair,
+    )
+
     losa.save_image(str(qc / "preview_raw.tif"), img_raw)
     losa.save_image(str(qc / "preview_corrected.tif"), img_corr)
+    metrics = compare_pair(img_raw, img_corr)
+    disp_raw, disp_corr = shared_norm_pair(img_raw, img_corr)
+    disp_diff = difference_image(img_raw, img_corr)
     if settings.save_preview:
         save_qc_png(qc / "before.png", img_raw, f"BEFORE  {recon_type} row={row}")
         save_qc_png(
@@ -625,6 +636,7 @@ def run_preview(
             img_corr,
             f"AFTER  {recon_type} row={row}  c={center:.2f}  shift={shift_c:+.2f}",
         )
+        save_qc_png(qc / "diff.png", disp_diff, f"|AFTER-BEFORE| row={row}")
 
     used = deepcopy(settings)
     used.center = center
@@ -642,21 +654,24 @@ def run_preview(
         "base_center": base_c,
         "pixel_shift": shift_c,
         "center": center,
+        "qc": metrics,
         "config": used.to_config_dict(),
     }
     save_yaml(out / "run_config.yaml", run_info)
 
+    qc_line = format_qc_line(metrics)
     hist = save_history_entry(
         scan_dir,
         kind="preview",
         settings_dict=used.to_config_dict(),
-        images={"before": img_raw, "after": img_corr},
-        extra=f"before_reused={before_reused}  row={row}",
+        images={"before": img_raw, "after": img_corr, "diff": disp_diff},
+        extra=f"before_reused={before_reused}  row={row}  {qc_line}",
     )
 
     msg = (
         f"Preview OK ({recon_type}). base={base_c:.3f} shift={shift_c:+.3f} "
-        f"effective={center:.3f}. before_reused={before_reused}. history={hist.name}"
+        f"effective={center:.3f}. before_reused={before_reused}. history={hist.name}\n"
+        f"{qc_line}"
     )
     _log(msg, progress)
     return PreviewResult(
@@ -670,14 +685,16 @@ def run_preview(
         n_projections=n_angles,
         img_raw=img_raw,
         img_corr=img_corr,
-        display_raw=_norm_display(img_raw),
-        display_corr=_norm_display(img_corr),
+        display_raw=disp_raw,
+        display_corr=disp_corr,
         settings=used,
         meta=meta,
         message=msg,
         before_reused=before_reused,
         history_dir=hist,
         before_key=key,
+        display_diff=disp_diff,
+        qc_metrics=metrics,
     )
 
 
@@ -689,17 +706,17 @@ def run_full(
 ) -> FullResult:
     from algotom.io import loadersaver as losa
 
+    from lab_tools import versioned_full_output_dir
+
     scan_dir, log_path, meta, proj_paths, height, width = _prepare_scan(scan_dir, progress)
     mid = height // 2
-    out = Path(out_dir) if out_dir else default_output_dir(scan_dir, settings.output_dir, False)
+    # Always create a new stamped folder so prior full runs are kept.
+    out = Path(out_dir) if out_dir else versioned_full_output_dir(scan_dir, settings)
     slices_dir = out / "slices"
     qc = out / "qc"
-    if slices_dir.exists():
-        shutil.rmtree(slices_dir)
-    if qc.exists():
-        shutil.rmtree(qc)
     slices_dir.mkdir(parents=True, exist_ok=True)
     qc.mkdir(parents=True, exist_ok=True)
+    _log(f"Output (new run folder): {out}", progress)
 
     recon_type = (settings.recon_type or "FBP").upper()
     _log(f"Full recon mode={recon_type}", progress)

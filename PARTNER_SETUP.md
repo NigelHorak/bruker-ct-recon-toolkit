@@ -39,17 +39,15 @@ A browser opens at `http://127.0.0.1:7860`. Keep the black window open while you
 
 ### 4) In the GUI
 1. Paste the Bruker scan folder path (TIFF projections + `.log`).
-2. Click **Load folder info**.
-3. Pick a preset if you want (mild / strong / rings off), or move the sliders.
-4. Click **Preview mid-slice**.
-   - Use **FBP** for fast ring tuning.
-   - Use **FDK** when you want true cone-beam geometry (needs SOD/SDD in the `.log`; slower preview).
-5. Compare **BEFORE** vs **AFTER** images.
-6. Tweak sliders and Preview again until rings look good.
+2. Click **Load folder + prepare align cache** (starts from log Postalignment).
+3. Nudge **pixel shift** / **Auto-tune** / **Multi-row align check** until the slice looks sharp.
+4. Pick a preset (mild / strong / rings off) or click **Compare ring methods**.
+5. Click **Full Preview** — check BEFORE / AFTER / difference image and the QC line in the log.
+6. Optional: **Preflight check** before a long run.
 7. Optional: type a name → **Save recipe**.
-8. Click **Run full reconstruction**.
+8. Click **Run full reconstruction** (writes a **new timestamped** folder; never overwrites an old full run).
 
-Outputs appear next to the scan as `*_algotom_preview` or `*_algotom_recon`.
+Outputs appear next to the scan as `*_algotom_preview`, `*_algotom_recon_YYYYMMDD_HHMMSS`, and `*_algotom_history`.
 
 ### Already installed earlier?
 ```powershell

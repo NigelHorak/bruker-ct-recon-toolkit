@@ -32,6 +32,11 @@ from recon_core import (  # noqa: E402
     save_yaml,
 )
 from history_store import list_history_gallery  # noqa: E402
+from lab_tools import (  # noqa: E402
+    compare_ring_methods,
+    preflight_scan,
+    validate_alignment_rows,
+)
 
 PRESET_DIR = ROOT / "config" / "presets"
 DEFAULT_CFG = ROOT / "config" / "default.yaml"
@@ -218,13 +223,24 @@ def on_full_preview(scan_dir: str, before_cache, before_key, *ctrl):
         return (
             result.display_raw,
             result.display_corr,
+            result.display_diff,
             status,
-            result.img_raw,  # float cache for next time
+            result.img_raw,
             result.before_key,
             gallery,
         )
     except Exception as exc:
-        return None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:]), before_cache, before_key, []
+        return None, None, None, f"PREVIEW FAILED: {exc}\n" + "\n".join(logs[-12:]), before_cache, before_key, []
+
+
+def on_preflight(scan_dir: str, *ctrl):
+    scan_dir = (scan_dir or "").strip().strip('"')
+    try:
+        settings = _settings_from_ui(*ctrl)
+        report = preflight_scan(scan_dir, settings)
+        return report.text
+    except Exception as exc:
+        return f"PREFLIGHT FAILED: {exc}"
 
 
 def on_full(scan_dir: str, *ctrl):
@@ -236,10 +252,54 @@ def on_full(scan_dir: str, *ctrl):
 
     try:
         settings = _settings_from_ui(*ctrl)
+        # Soft gate: always show preflight notes in the log first
+        report = preflight_scan(scan_dir, settings, progress=progress)
         result = run_full(Path(scan_dir), settings, progress=progress)
-        return f"{result.message}\n" + "\n".join(logs[-20:])
+        return f"{report.text}\n\n{result.message}\n" + "\n".join(logs[-20:])
     except Exception as exc:
         return f"FULL RECON FAILED: {exc}\n" + "\n".join(logs[-20:])
+
+
+def on_align_check(scan_dir: str, pixel_shift: float, apply_log: bool):
+    scan_dir = (scan_dir or "").strip().strip('"')
+    if not scan_dir:
+        return None, "Enter a scan folder first.", float(pixel_shift or 0.0), float(pixel_shift or 0.0), []
+    logs: List[str] = []
+
+    def progress(msg: str) -> None:
+        logs.append(msg)
+
+    try:
+        montage, msg, recommended = validate_alignment_rows(
+            Path(scan_dir), float(pixel_shift or 0.0), apply_log=bool(apply_log), progress=progress
+        )
+        gallery = list_history_gallery(Path(scan_dir))
+        return montage, msg + "\n" + "\n".join(logs[-8:]), recommended, recommended, gallery
+    except Exception as exc:
+        return None, f"ALIGN CHECK FAILED: {exc}", float(pixel_shift or 0.0), float(pixel_shift or 0.0), []
+
+
+def on_ring_compare(scan_dir: str, *ctrl):
+    scan_dir = (scan_dir or "").strip().strip('"')
+    logs: List[str] = []
+
+    def progress(msg: str) -> None:
+        logs.append(msg)
+
+    try:
+        settings = _settings_from_ui(*ctrl)
+        gallery_tiles, report, win = compare_ring_methods(Path(scan_dir), settings, progress=progress)
+        hist = list_history_gallery(Path(scan_dir))
+        # Apply winning ring method into UI controls
+        return (
+            gallery_tiles,
+            report + "\n" + "\n".join(logs[-10:]),
+            win.ring_enable,
+            win.ring_method,
+            hist,
+        )
+    except Exception as exc:
+        return [], f"RING COMPARE FAILED: {exc}", True, "remove_all_stripe", []
 
 
 def on_save_recipe(recipe_name: str, *ctrl):
@@ -275,8 +335,9 @@ def build_app():
     with gr.Blocks(title="Bruker CT Algotom Toolkit") as demo:
         gr.Markdown(
             "# Bruker CT Algotom Toolkit\n"
-            "**Fast path:** Load → align (cached) → Full Preview (reuses BEFORE when only rings change).  \n"
-            "Every run is saved to `<scan>_algotom_history` with settings under each image."
+            "**Fast path:** Load → align → Full Preview (reuses BEFORE when only rings change).  \n"
+            "New: ring QC score + difference image, multi-row align check, ring-method bake-off, "
+            "preflight, timestamped full outputs (never overwrites)."
         )
 
         align_cache = gr.State(None)
@@ -312,6 +373,7 @@ def build_app():
                 btn_p05 = gr.Button("+0.5")
             with gr.Row():
                 btn_auto = gr.Button("Auto-tune shift (±2 px)", variant="primary")
+                btn_align_check = gr.Button("Multi-row align check")
                 btn_reset = gr.Button("Reset to log / 0")
             with gr.Row():
                 base_center_out = gr.Number(0, label="Base COR", interactive=False)
@@ -357,11 +419,21 @@ def build_app():
 
             with gr.Row():
                 btn_preview = gr.Button("Full Preview (rings + algorithm)", variant="primary")
+                btn_ring_cmp = gr.Button("Compare ring methods (FBP)")
+                btn_preflight = gr.Button("Preflight check")
                 btn_full = gr.Button("Run full reconstruction", variant="stop")
             with gr.Row():
-                img_before = gr.Image(label="BEFORE rings", type="numpy")
-                img_after = gr.Image(label="AFTER rings", type="numpy")
-            status = gr.Textbox(label="Full preview / recon log", lines=8)
+                img_before = gr.Image(label="BEFORE rings (matched window)", type="numpy")
+                img_after = gr.Image(label="AFTER rings (matched window)", type="numpy")
+                img_diff = gr.Image(label="|AFTER − BEFORE| (what rings changed)", type="numpy")
+            compare_gallery = gr.Gallery(
+                label="Ring-method comparison",
+                columns=5,
+                height=280,
+                object_fit="contain",
+                preview=True,
+            )
+            status = gr.Textbox(label="Full preview / recon / QC log", lines=10)
 
         with gr.Accordion("4) History (compare past runs — settings under each image)", open=True):
             gr.Markdown(
@@ -406,6 +478,11 @@ def build_app():
             inputs=[align_cache, apply_log_align],
             outputs=[pixel_shift, pixel_shift_num, align_img, align_status, base_center_out, effective_center_out, history_gallery],
         )
+        btn_align_check.click(
+            on_align_check,
+            inputs=[scan_dir, pixel_shift, apply_log_align],
+            outputs=[align_img, align_status, pixel_shift, pixel_shift_num, history_gallery],
+        )
 
         def _reset_shift(cache: Optional[AlignCache]):
             val = float(cache.log_postalignment) if cache is not None else 0.0
@@ -422,8 +499,14 @@ def build_app():
         btn_preview.click(
             on_full_preview,
             inputs=[scan_dir, before_cache, before_key, *controls],
-            outputs=[img_before, img_after, status, before_cache, before_key, history_gallery],
+            outputs=[img_before, img_after, img_diff, status, before_cache, before_key, history_gallery],
         )
+        btn_ring_cmp.click(
+            on_ring_compare,
+            inputs=[scan_dir, *controls],
+            outputs=[compare_gallery, status, ring_enable, ring_method, history_gallery],
+        )
+        btn_preflight.click(on_preflight, inputs=[scan_dir, *controls], outputs=[status])
         btn_full.click(on_full, inputs=[scan_dir, *controls], outputs=[status])
         btn_save.click(on_save_recipe, inputs=[recipe_name, *controls], outputs=[status, preset])
         btn_hist.click(on_refresh_history, inputs=[scan_dir], outputs=[history_gallery])
