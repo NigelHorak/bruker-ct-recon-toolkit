@@ -1,0 +1,20 @@
+# Copy this file to notify.yaml (gitignored) and fill in secrets.
+# On every GUI error the toolkit emails you and/or pushes ntfy.
+
+email:
+  enabled: true
+  to: nhhorak@gmail.com
+  from: nhhorak@gmail.com
+  smtp_host: smtp.gmail.com
+  smtp_port: 587
+  use_tls: true
+  smtp_user: nhhorak@gmail.com
+  # Create a Google App Password: Google Account -> Security -> 2-Step -> App passwords
+  smtp_password: "PASTE_APP_PASSWORD_HERE"
+
+# Optional phone/desktop push (no password). Pick a hard-to-guess topic name.
+# Subscribe at https://ntfy.sh/YOUR_TOPIC or install the ntfy app.
+ntfy:
+  enabled: true
+  server: https://ntfy.sh
+  topic: bruker-ct-nigelhorak-CHANGE_ME

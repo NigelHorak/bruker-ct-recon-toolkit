@@ -38,12 +38,21 @@ def log_exception(where: str, exc: BaseException) -> str:
     log_line(f"ERROR in {where}: {type(exc).__name__}: {exc}")
     for row in tb.splitlines():
         log_line(f"  | {row}")
-    return (
+    block = (
         f"FAILED: {where}\n"
         f"{type(exc).__name__}: {exc}\n\n"
         f"--- traceback ---\n{tb}\n"
-        f"Also written to: {LOG_PATH}"
+        f"Also written to: {LOG_PATH}\n"
+        f"And: {ROOT / 'last_error_report.txt'}"
     )
+    try:
+        from notify import notify_error, notify_status
+
+        notify_error(where, block)
+        block = block + "\n" + notify_status()
+    except Exception as notify_exc:
+        log_line(f"NOTIFY setup failed: {notify_exc}")
+    return block
 
 
 class ProgressLog:
@@ -68,11 +77,20 @@ def startup_banner() -> str:
     log_line("=" * 60)
     log_line("Bruker CT Algotom Toolkit GUI started")
     log_line(f"Log file: {LOG_PATH}")
+    try:
+        from notify import notify_status
+
+        alert = notify_status()
+    except Exception:
+        alert = "Error alerts: unavailable"
+    log_line(alert)
     return (
         f"GUI ready.\n"
         f"Log file: {LOG_PATH}\n"
+        f"{alert}\n"
         f"Paste a scan folder and click Load scan.\n"
-        f"Errors and progress appear here AND in the black console window."
+        f"Errors appear here, in the black console, toolkit_gui.log, "
+        f"and (if configured) your email/ntfy."
     )
 
 

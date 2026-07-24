@@ -33,3 +33,9 @@ Thumbs.db
 !docs/**/*.png
 tmp/
 temp/
+
+# Local secrets + live error dumps
+config/notify.yaml
+toolkit_gui.log
+last_error_report.txt
+
