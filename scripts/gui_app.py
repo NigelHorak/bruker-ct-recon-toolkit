@@ -4,6 +4,7 @@ Designed for fast alignment (~30s): cache mid-row once, then sub-second nudges.
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -430,25 +431,60 @@ def build_app():
     return demo
 
 
-def main() -> None:
-    import socket
+def _pids_listening_on_port(port: int) -> list[int]:
+    """Windows: PIDs with a LISTENING socket on this port."""
+    import subprocess
 
-    def port_free(port: int) -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind(("127.0.0.1", port))
-                return True
-            except OSError:
-                return False
+    try:
+        out = subprocess.check_output(["netstat", "-ano"], text=True, errors="ignore")
+    except (OSError, subprocess.CalledProcessError):
+        return []
 
-    port = next((p for p in range(7860, 7871) if port_free(p)), None)
-    if port is None:
-        raise OSError(
-            "No free port in 7860-7870. Close old toolkit windows "
-            "(Task Manager: end python.exe), then try again."
+    needle = f":{port}"
+    pids: set[int] = set()
+    for line in out.splitlines():
+        if "LISTENING" not in line.upper() or needle not in line:
+            continue
+        # Match "127.0.0.1:7860" / "0.0.0.0:7860" / "[::]:7860", not ":78600"
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        local = parts[1]
+        if not (local.endswith(needle) or local.endswith(f"]{needle}")):
+            continue
+        try:
+            pids.add(int(parts[-1]))
+        except ValueError:
+            continue
+    return sorted(pids)
+
+
+def _reclaim_port(port: int) -> None:
+    """End any previous process holding the toolkit port so startup always works."""
+    import subprocess
+    import time
+
+    pids = [p for p in _pids_listening_on_port(port) if p != os.getpid()]
+    if not pids:
+        return
+    print(f"Port {port} in use by PID(s) {pids} — closing previous toolkit instance...")
+    for pid in pids:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F", "/T"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
+    # Brief wait so Windows releases the socket
+    for _ in range(20):
+        if not _pids_listening_on_port(port):
+            break
+        time.sleep(0.25)
 
+
+def main() -> None:
+    port = 7860
+    _reclaim_port(port)
     print(f"Opening GUI at http://127.0.0.1:{port}")
     demo = build_app()
     demo.queue().launch(

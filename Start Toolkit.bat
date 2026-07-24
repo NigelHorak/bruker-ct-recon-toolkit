@@ -17,9 +17,8 @@ if "%CONDA_EXE%"=="" (
 
 echo Starting Bruker CT Algotom Toolkit GUI...
 echo A browser window should open at http://127.0.0.1:7860
-echo (If 7860 is busy it will try 7861, 7862, ... automatically.)
+echo (Any previous toolkit on that port is closed automatically.)
 echo Keep this black window open while you use the toolkit.
-echo If start fails: close other toolkit windows, or in Task Manager end python.exe
 echo.
 
 "%CONDA_EXE%" run -n algotom-gpu --no-capture-output python "%~dp0scripts\gui_app.py"
